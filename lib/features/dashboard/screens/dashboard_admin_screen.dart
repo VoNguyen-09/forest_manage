@@ -14,6 +14,7 @@ class DashboardAdminScreen extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: AppColors.neutral,
+      drawer: _buildDrawer(context),
       appBar: AppBar(
         title: const Text(AppStrings.dashboard),
         backgroundColor: AppColors.primary,
@@ -136,6 +137,114 @@ class DashboardAdminScreen extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildDrawer(BuildContext context) {
+    return Drawer(
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          const DrawerHeader(
+            decoration: BoxDecoration(color: AppColors.primary),
+            child: Text(
+              'Forest Carbon\nPlatform',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.dashboard),
+            title: const Text('Tổng quan'),
+            onTap: () {
+              Navigator.pop(context);
+              context.push(AppRoutes.dashboardAdmin);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.map),
+            title: const Text('Bản đồ'),
+            onTap: () {
+              Navigator.pop(context);
+              context.push(AppRoutes.map);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.people),
+            title: const Text('Quản lý Chủ rừng'),
+            onTap: () {
+              Navigator.pop(context);
+              context.push(AppRoutes.forestOwners);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.park),
+            title: const Text('Quản lý Dự án'),
+            onTap: () {
+              Navigator.pop(context);
+              context.push(AppRoutes.forestProjects);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.folder),
+            title: const Text('Quản lý Tài liệu'),
+            onTap: () {
+              Navigator.pop(context);
+              context.push(AppRoutes.fileManager);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.eco),
+            title: const Text('Tính toán Carbon'),
+            onTap: () {
+              Navigator.pop(context);
+              context.push(AppRoutes.carbon);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.settings),
+            title: const Text('Hệ số phát thải'),
+            onTap: () {
+              Navigator.pop(context);
+              context.push(AppRoutes.speciesFactors);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.picture_as_pdf),
+            title: const Text('Báo cáo PDF'),
+            onTap: () {
+              Navigator.pop(context);
+              context.push(AppRoutes.reports);
+            },
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.notifications),
+            title: const Text('Thông báo'),
+            onTap: () {
+              Navigator.pop(context);
+              context.push(AppRoutes.notifications);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.manage_accounts),
+            title: const Text('Quản lý Tài khoản'),
+            onTap: () {
+              Navigator.pop(context);
+              context.push(AppRoutes.accounts);
+            },
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.logout, color: AppColors.error),
+            title: const Text('Đăng xuất', style: TextStyle(color: AppColors.error)),
+            onTap: () => context.go(AppRoutes.login),
+          ),
+        ],
       ),
     );
   }
