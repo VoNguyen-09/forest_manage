@@ -57,6 +57,9 @@ class FirestoreService {
     }).toList();
   }
 
+  /// Alias requested by TV1
+  Future<List<UserModel>> getAccounts() => listUsers();
+
   // ────────────────────────────────────────────────────────────────────────────
   // FOREST OWNERS
   // ────────────────────────────────────────────────────────────────────────────
@@ -322,5 +325,42 @@ class FirestoreService {
       'isRead': false,
       'createdAt': DateTime.now().toIso8601String(),
     });
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // DASHBOARD DATA (For TV1)
+  // ────────────────────────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getDashboardData() async {
+    final owners = await listForestOwners();
+    final projects = await listForestProjects();
+    
+    double totalArea = 0;
+    int totalTrees = 0;
+    double totalCarbon = 0;
+    
+    for (var project in projects) {
+      totalArea += project.totalAreaHa;
+      
+      final plots = await listPlots(projectId: project.id);
+      for (var plot in plots) {
+        for (var tree in plot.trees) {
+          totalTrees += tree.quantity;
+        }
+      }
+      
+      final latestCarbon = await getLatestCarbonResult(project.id);
+      if (latestCarbon != null) {
+        totalCarbon += latestCarbon.co2eTon;
+      }
+    }
+
+    return {
+      'totalOwners': owners.length,
+      'totalProjects': projects.length,
+      'totalAreaHa': totalArea,
+      'totalTrees': totalTrees,
+      'totalCarbonCo2e': totalCarbon,
+    };
   }
 }
