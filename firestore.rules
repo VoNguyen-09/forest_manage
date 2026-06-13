@@ -1,0 +1,148 @@
+rules_version = '2';
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Forest Carbon Platform — Firestore Security Rules
+//  TV4: Kiểm tra và deploy lên Firebase Console
+//
+//  Quy tắc:
+//    - Không để `allow read, write: if true;` ở bất kỳ đâu
+//    - User chỉ đọc được data của mình; Admin đọc tất cả
+//    - Mọi thay đổi rules phải test trước khi deploy
+// ═══════════════════════════════════════════════════════════════════════════
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ─────────────────────────────────────────────────────
+
+    /// Kiểm tra user đang đăng nhập
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    /// Đọc role từ Firestore (so sánh với field 'role' trong users/{uid})
+    function getRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isPlatformAdmin() {
+      return isAuth() && getRole() == 'platformAdmin';
+    }
+
+    function isForestOwner() {
+      return isAuth() && getRole() == 'forestOwner';
+    }
+
+    function isForestWorker() {
+      return isAuth() && getRole() == 'forestWorker';
+    }
+
+    function isAdminOrOwner() {
+      return isPlatformAdmin() || isForestOwner();
+    }
+
+    /// Kiểm tra uid của request là chính mình
+    function isOwnerOfDoc(uid) {
+      return isAuth() && request.auth.uid == uid;
+    }
+
+    // ── users ────────────────────────────────────────────────────────────────
+    // - Đọc: chính mình hoặc admin
+    // - Tạo: admin
+    // - Sửa: chính mình (không đổi role/status) hoặc admin
+    // - Xóa: admin
+    match /users/{userId} {
+      allow read: if isOwnerOfDoc(userId) || isPlatformAdmin();
+      allow create: if isPlatformAdmin();
+      allow update: if isPlatformAdmin()
+                    || (isOwnerOfDoc(userId)
+                        && !request.resource.data.diff(resource.data).affectedKeys()
+                            .hasAny(['role', 'status']));
+      allow delete: if isPlatformAdmin();
+    }
+
+    // ── forestOwners ─────────────────────────────────────────────────────────
+    // - Đọc: mọi user đã xác thực
+    // - Ghi: admin hoặc forestOwner
+    match /forestOwners/{ownerId} {
+      allow read: if isAuth();
+      allow create, update: if isAdminOrOwner();
+      allow delete: if isPlatformAdmin();
+    }
+
+    // ── forestProjects ───────────────────────────────────────────────────────
+    // - Đọc: mọi user đã xác thực
+    // - Tạo/Sửa: admin hoặc chủ rừng (chỉ project của mình)
+    // - Xóa: admin
+    match /forestProjects/{projectId} {
+      allow read: if isAuth();
+      allow create: if isAdminOrOwner();
+      allow update: if isPlatformAdmin()
+                    || (isForestOwner() && resource.data.ownerId == request.auth.uid);
+      allow delete: if isPlatformAdmin();
+    }
+
+    // ── plots ────────────────────────────────────────────────────────────────
+    // - Đọc: mọi user đã xác thực
+    // - Ghi: worker, owner, admin
+    match /plots/{plotId} {
+      allow read: if isAuth();
+      allow create, update: if isAuth();
+      allow delete: if isAdminOrOwner();
+    }
+
+    // ── logEntries ───────────────────────────────────────────────────────────
+    // - Đọc: chính mình hoặc admin/owner
+    // - Tạo: worker, owner, admin
+    // - Sửa: chính mình hoặc admin
+    // - Xóa: admin
+    match /logEntries/{entryId} {
+      allow read: if isAuth()
+                  && (resource.data.userId == request.auth.uid || isAdminOrOwner());
+      allow create: if isAuth();
+      allow update: if isPlatformAdmin()
+                    || (isAuth() && resource.data.userId == request.auth.uid);
+      allow delete: if isPlatformAdmin();
+    }
+
+    // ── carbonResults ────────────────────────────────────────────────────────
+    // - Đọc: mọi user đã xác thực
+    // - Tạo/Sửa: admin hoặc owner
+    // - Xóa: admin
+    match /carbonResults/{resultId} {
+      allow read: if isAuth();
+      allow create, update: if isAdminOrOwner();
+      allow delete: if isPlatformAdmin();
+    }
+
+    // ── speciesFactors ───────────────────────────────────────────────────────
+    // - Đọc: mọi user đã xác thực (cần để tính toán carbon)
+    // - Ghi: chỉ admin
+    match /speciesFactors/{speciesId} {
+      allow read: if isAuth();
+      allow create, update, delete: if isPlatformAdmin();
+    }
+
+    // ── notifications ────────────────────────────────────────────────────────
+    // - Đọc: chính mình
+    // - Ghi: admin (hoặc Cloud Function)
+    // - Update (đánh dấu đã đọc): chính mình
+    match /notifications/{notifId} {
+      allow read: if isAuth() && resource.data.userId == request.auth.uid;
+      allow create: if isPlatformAdmin();
+      allow update: if isAuth() && resource.data.userId == request.auth.uid;
+      allow delete: if isPlatformAdmin();
+    }
+
+    // ── files ────────────────────────────────────────────────────────────────
+    // - Đọc: mọi user đã xác thực
+    // - Tạo/Sửa: mọi user đã xác thực
+    // - Xóa: admin hoặc người upload (uploadedBy == uid)
+    match /files/{fileId} {
+      allow read: if isAuth();
+      allow create, update: if isAuth();
+      allow delete: if isPlatformAdmin()
+                    || (isAuth() && resource.data.uploadedBy == request.auth.uid);
+    }
+  }
+}
