@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:forest_carbon_platform/config/theme.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_button.dart';
@@ -29,7 +30,16 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
     // TODO: gọi AuthService.signIn()
     await Future.delayed(const Duration(seconds: 1));
+    
+    if (!mounted) return;
     setState(() => _isLoading = false);
+    
+    // Tạm thời điều hướng thẳng vào Dashboard Admin để xem UI
+    if (_emailController.text.contains('admin')) {
+      context.go(AppRoutes.dashboardAdmin);
+    } else {
+      context.go(AppRoutes.dashboardOwner);
+    }
   }
 
   @override
@@ -152,7 +162,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           alignment: Alignment.centerRight,
                           child: TextButton(
                             onPressed: () {
-                              // TODO: go to forgot password
+                              context.push(AppRoutes.forgotPassword);
                             },
                             child: Text(
                               AppStrings.forgotPassword,

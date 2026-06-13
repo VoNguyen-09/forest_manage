@@ -2,6 +2,10 @@ import 'package:go_router/go_router.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
 import 'package:forest_carbon_platform/features/auth/screens/login_screen.dart';
 import 'package:forest_carbon_platform/features/dashboard/screens/dashboard_admin_screen.dart';
+import 'package:forest_carbon_platform/features/dashboard/screens/dashboard_owner_screen.dart';
+import 'package:forest_carbon_platform/features/file_manager/screens/file_manager_screen.dart';
+import 'package:forest_carbon_platform/features/auth/screens/forgot_password_screen.dart';
+import 'package:forest_carbon_platform/features/auth/screens/change_password_screen.dart';
 
 final GoRouter appRouter = GoRouter(
   initialLocation: AppRoutes.login,
@@ -12,6 +16,17 @@ final GoRouter appRouter = GoRouter(
       name: 'login',
       builder: (context, state) => const LoginScreen(),
     ),
+    GoRoute(
+      path: AppRoutes.forgotPassword,
+      name: 'forgotPassword',
+      builder: (context, state) => const ForgotPasswordScreen(),
+    ),
+    // Route đổi mật khẩu, trong thực tế có thể cần đặt trong một ShellRoute hoặc nested route sau khi login
+    GoRoute(
+      path: '/change-password',
+      name: 'changePassword',
+      builder: (context, state) => const ChangePasswordScreen(),
+    ),
 
     // ── Dashboard ──────────────────────────────────
     GoRoute(
@@ -19,10 +34,21 @@ final GoRouter appRouter = GoRouter(
       name: 'dashboardAdmin',
       builder: (context, state) => const DashboardAdminScreen(),
     ),
+    GoRoute(
+      path: AppRoutes.dashboardOwner,
+      name: 'dashboardOwner',
+      builder: (context, state) => const DashboardOwnerScreen(),
+    ),
+    
+    // ── File Manager ────────────────────────────────
+    GoRoute(
+      path: AppRoutes.fileManager,
+      name: 'fileManager',
+      builder: (context, state) => const FileManagerScreen(),
+    ),
   ],
 
   // TODO: Add all routes as features are built
-  // GoRoute(path: AppRoutes.dashboardOwner, ...)
   // GoRoute(path: AppRoutes.map, ...)
   // GoRoute(path: AppRoutes.forestOwners, ...)
   // GoRoute(path: AppRoutes.logbook, ...)
