@@ -5,6 +5,7 @@ import 'package:forest_carbon_platform/features/dashboard/screens/dashboard_admi
 import 'package:forest_carbon_platform/features/dashboard/screens/dashboard_owner_screen.dart';
 import 'package:forest_carbon_platform/features/file_manager/screens/file_manager_screen.dart';
 import 'package:forest_carbon_platform/features/notifications/screens/notification_screen.dart';
+import 'package:forest_carbon_platform/features/accounts/screens/account_management_screen.dart';
 import 'package:forest_carbon_platform/features/auth/screens/forgot_password_screen.dart';
 import 'package:forest_carbon_platform/features/auth/screens/change_password_screen.dart';
 // ── TV4 — Carbon Engine & Reports ─────────────────────────────────────────────
@@ -57,6 +58,13 @@ final GoRouter appRouter = GoRouter(
       path: AppRoutes.notifications,
       name: 'notifications',
       builder: (context, state) => const NotificationScreen(),
+    ),
+
+    // ── Accounts ────────────────────────────────────
+    GoRoute(
+      path: AppRoutes.accounts,
+      name: 'accounts',
+      builder: (context, state) => const AccountManagementScreen(),
     ),
 
     // ── TV4 — Carbon Calculation ────────────────────
