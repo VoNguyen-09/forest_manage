@@ -5,6 +5,8 @@ import 'package:forest_carbon_platform/config/theme.dart';
 import 'package:forest_carbon_platform/core/models/forest_owner_model.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_card.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_button.dart';
+import 'package:forest_carbon_platform/core/services/forest_owner_service.dart';
+import 'package:forest_carbon_platform/shared/widgets/empty_state.dart';
 
 class ForestOwnersScreen extends StatefulWidget {
   const ForestOwnersScreen({super.key});
@@ -14,31 +16,7 @@ class ForestOwnersScreen extends StatefulWidget {
 }
 
 class _ForestOwnersScreenState extends State<ForestOwnersScreen> {
-  // Dữ liệu mẫu (Mock Data)
-  final List<ForestOwnerModel> _owners = [
-    ForestOwnerModel(
-      id: '1',
-      ownerCode: 'CR001',
-      ownerName: 'Nguyễn Văn A',
-      type: OwnerType.individual,
-      cccd: '012345678910',
-      address: 'Đắk Lắk',
-      phone: '0901234567',
-      email: 'nva@example.com',
-      createdAt: DateTime.now(),
-    ),
-    ForestOwnerModel(
-      id: '2',
-      ownerCode: 'CR002',
-      ownerName: 'Cty Lâm Nghiệp B',
-      type: OwnerType.company,
-      cccd: '0312345678',
-      address: 'Lâm Đồng',
-      phone: '0909876543',
-      email: 'contact@ctyb.com',
-      createdAt: DateTime.now(),
-    ),
-  ];
+  final Stream<List<ForestOwnerModel>> _ownersStream = ForestOwnerService.instance.getOwnersStream();
 
   @override
   Widget build(BuildContext context) {
@@ -75,15 +53,33 @@ class _ForestOwnersScreenState extends State<ForestOwnersScreen> {
             constraints: const BoxConstraints(
               maxWidth: AppBreakpoints.web,
             ),
-            child: AppCard(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _buildSearchAndFilter(),
-                  const SizedBox(height: AppSpacing.md),
-                  isWeb ? _buildDataTable() : _buildListView(),
-                ],
-              ),
+            child: StreamBuilder<List<ForestOwnerModel>>(
+              stream: _ownersStream,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Text('Lỗi: ${snapshot.error}', style: const TextStyle(color: AppColors.error)),
+                  );
+                }
+                final owners = snapshot.data ?? [];
+
+                return AppCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildSearchAndFilter(),
+                      const SizedBox(height: AppSpacing.md),
+                      if (owners.isEmpty)
+                        const AppEmptyState(title: 'Chưa có chủ rừng nào.')
+                      else
+                        isWeb ? _buildDataTable(owners) : _buildListView(owners),
+                    ],
+                  ),
+                );
+              }
             ),
           ),
         ),
@@ -116,7 +112,7 @@ class _ForestOwnersScreenState extends State<ForestOwnersScreen> {
     );
   }
 
-  Widget _buildDataTable() {
+  Widget _buildDataTable(List<ForestOwnerModel> owners) {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: DataTable(
@@ -128,7 +124,7 @@ class _ForestOwnersScreenState extends State<ForestOwnersScreen> {
           DataColumn(label: Text('Địa chỉ')),
           DataColumn(label: Text('Thao tác')),
         ],
-        rows: _owners.map((owner) => DataRow(
+        rows: owners.map((owner) => DataRow(
           cells: [
             DataCell(Text(owner.ownerCode)),
             DataCell(Text(owner.ownerName)),
@@ -155,14 +151,14 @@ class _ForestOwnersScreenState extends State<ForestOwnersScreen> {
     );
   }
 
-  Widget _buildListView() {
+  Widget _buildListView(List<ForestOwnerModel> owners) {
     return ListView.separated(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
-      itemCount: _owners.length,
+      itemCount: owners.length,
       separatorBuilder: (context, index) => const Divider(),
       itemBuilder: (context, index) {
-        final owner = _owners[index];
+        final owner = owners[index];
         return ListTile(
           leading: CircleAvatar(
             backgroundColor: AppColors.primary.withOpacity(0.1),

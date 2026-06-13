@@ -6,6 +6,8 @@ import 'package:forest_carbon_platform/core/models/forest_project_model.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_card.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_button.dart';
 import 'package:forest_carbon_platform/shared/widgets/status_badge.dart';
+import 'package:forest_carbon_platform/core/services/forest_project_service.dart';
+import 'package:forest_carbon_platform/shared/widgets/empty_state.dart';
 
 class ForestProjectsScreen extends StatefulWidget {
   const ForestProjectsScreen({super.key});
@@ -15,39 +17,7 @@ class ForestProjectsScreen extends StatefulWidget {
 }
 
 class _ForestProjectsScreenState extends State<ForestProjectsScreen> {
-  // Dữ liệu mẫu (Mock Data)
-  final List<ForestProjectModel> _projects = [
-    ForestProjectModel(
-      id: '1',
-      projectName: 'Dự án Rừng Keo Đắk Lắk',
-      ownerId: '1',
-      province: 'Đắk Lắk',
-      district: 'Buôn Ma Thuột',
-      commune: 'Ea Tu',
-      forestType: 'Rừng trồng',
-      treeSpecies: 'Keo lai',
-      yearPlanted: 2020,
-      status: ProjectStatus.active,
-      totalAreaHa: 50.5,
-      createdAt: DateTime.now(),
-      updatedAt: DateTime.now(),
-    ),
-    ForestProjectModel(
-      id: '2',
-      projectName: 'Dự án Thông Lâm Đồng',
-      ownerId: '2',
-      province: 'Lâm Đồng',
-      district: 'Đà Lạt',
-      commune: 'Xuân Thọ',
-      forestType: 'Rừng phòng hộ',
-      treeSpecies: 'Thông ba lá',
-      yearPlanted: 2018,
-      status: ProjectStatus.surveying,
-      totalAreaHa: 120.0,
-      createdAt: DateTime.now(),
-      updatedAt: DateTime.now(),
-    ),
-  ];
+  final Stream<List<ForestProjectModel>> _projectsStream = ForestProjectService.instance.getProjectsStream();
 
   @override
   Widget build(BuildContext context) {
@@ -84,15 +54,33 @@ class _ForestProjectsScreenState extends State<ForestProjectsScreen> {
             constraints: const BoxConstraints(
               maxWidth: AppBreakpoints.web,
             ),
-            child: AppCard(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _buildSearchAndFilter(),
-                  const SizedBox(height: AppSpacing.md),
-                  isWeb ? _buildDataTable() : _buildListView(),
-                ],
-              ),
+            child: StreamBuilder<List<ForestProjectModel>>(
+              stream: _projectsStream,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Text('Lỗi: ${snapshot.error}', style: const TextStyle(color: AppColors.error)),
+                  );
+                }
+                final projects = snapshot.data ?? [];
+
+                return AppCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildSearchAndFilter(),
+                      const SizedBox(height: AppSpacing.md),
+                      if (projects.isEmpty)
+                        const AppEmptyState(title: 'Chưa có dự án nào.')
+                      else
+                        isWeb ? _buildDataTable(projects) : _buildListView(projects),
+                    ],
+                  ),
+                );
+              }
             ),
           ),
         ),
@@ -125,7 +113,7 @@ class _ForestProjectsScreenState extends State<ForestProjectsScreen> {
     );
   }
 
-  Widget _buildDataTable() {
+  Widget _buildDataTable(List<ForestProjectModel> projects) {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: DataTable(
@@ -137,7 +125,7 @@ class _ForestProjectsScreenState extends State<ForestProjectsScreen> {
           DataColumn(label: Text('Trạng thái')),
           DataColumn(label: Text('Thao tác')),
         ],
-        rows: _projects.map((proj) => DataRow(
+        rows: projects.map((proj) => DataRow(
           cells: [
             DataCell(Text(proj.projectName, style: const TextStyle(fontWeight: FontWeight.bold))),
             DataCell(Text(proj.forestType)),
@@ -165,14 +153,14 @@ class _ForestProjectsScreenState extends State<ForestProjectsScreen> {
     );
   }
 
-  Widget _buildListView() {
+  Widget _buildListView(List<ForestProjectModel> projects) {
     return ListView.separated(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
-      itemCount: _projects.length,
+      itemCount: projects.length,
       separatorBuilder: (context, index) => const Divider(),
       itemBuilder: (context, index) {
-        final proj = _projects[index];
+        final proj = projects[index];
         return ListTile(
           title: Text(proj.projectName, style: const TextStyle(fontWeight: FontWeight.bold)),
           subtitle: Column(

@@ -3,8 +3,13 @@ import 'package:go_router/go_router.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
 import 'package:forest_carbon_platform/config/theme.dart';
 import 'package:forest_carbon_platform/core/models/forest_project_model.dart';
+import 'package:uuid/uuid.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_card.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_button.dart';
+import 'package:forest_carbon_platform/shared/widgets/loading_overlay.dart';
+import 'package:forest_carbon_platform/core/services/forest_project_service.dart';
+import 'package:forest_carbon_platform/core/services/forest_owner_service.dart';
+import 'package:forest_carbon_platform/core/models/forest_owner_model.dart';
 
 class ForestProjectFormScreen extends StatefulWidget {
   final ForestProjectModel? project;
@@ -26,6 +31,8 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
   late TextEditingController _districtController;
   late TextEditingController _communeController;
   ProjectStatus _selectedStatus = ProjectStatus.draft;
+  bool _isLoading = false;
+  String? _selectedOwnerId;
 
   @override
   void initState() {
@@ -39,6 +46,7 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
     _communeController = TextEditingController(text: widget.project?.commune ?? '');
     if (widget.project != null) {
       _selectedStatus = widget.project!.status;
+      _selectedOwnerId = widget.project!.ownerId;
     }
   }
 
@@ -54,13 +62,50 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
     super.dispose();
   }
 
-  void _saveForm() {
-    if (_formKey.currentState!.validate()) {
-      // Mock save success
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Lưu thông tin dự án thành công!')),
+  Future<void> _saveForm() async {
+    if (!_formKey.currentState!.validate()) return;
+    if (_selectedOwnerId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Vui lòng chọn chủ rừng', style: TextStyle(color: Colors.white)), backgroundColor: AppColors.error));
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      final project = ForestProjectModel(
+        id: widget.project?.id ?? const Uuid().v4(),
+        projectName: _nameController.text.trim(),
+        ownerId: _selectedOwnerId!,
+        province: _provinceController.text.trim(),
+        district: _districtController.text.trim(),
+        commune: _communeController.text.trim(),
+        forestType: _forestTypeController.text.trim(),
+        treeSpecies: _treeSpeciesController.text.trim(),
+        yearPlanted: int.tryParse(_yearController.text.trim()) ?? DateTime.now().year,
+        status: _selectedStatus,
+        polygon: widget.project?.polygon ?? [],
+        totalAreaHa: widget.project?.totalAreaHa ?? 0.0,
+        perimeter: widget.project?.perimeter ?? 0.0,
+        createdAt: widget.project?.createdAt ?? DateTime.now(),
+        updatedAt: DateTime.now(),
       );
-      context.pop();
+
+      if (widget.project == null) {
+        await ForestProjectService.instance.addProject(project);
+      } else {
+        await ForestProjectService.instance.updateProject(project);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lưu dự án thành công!')));
+        context.pop();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Lỗi: $e', style: const TextStyle(color: Colors.white)), backgroundColor: AppColors.error));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -75,7 +120,9 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.onPrimary,
       ),
-      body: SingleChildScrollView(
+      body: AppLoadingOverlay(
+        isLoading: _isLoading,
+        child: SingleChildScrollView(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Center(
           child: ConstrainedBox(
@@ -96,6 +143,29 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
                           controller: _nameController,
                           decoration: const InputDecoration(labelText: AppStrings.projectName, border: OutlineInputBorder()),
                           validator: (val) => val == null || val.isEmpty ? AppStrings.fieldRequired : null,
+                        ),
+                        const SizedBox(height: AppSpacing.md),
+
+                        StreamBuilder<List<ForestOwnerModel>>(
+                          stream: ForestOwnerService.instance.getOwnersStream(),
+                          builder: (context, snapshot) {
+                            if (snapshot.connectionState == ConnectionState.waiting) {
+                              return const CircularProgressIndicator();
+                            }
+                            final owners = snapshot.data ?? [];
+                            // Ensure selected ID exists in the list
+                            if (_selectedOwnerId != null && !owners.any((o) => o.id == _selectedOwnerId)) {
+                              _selectedOwnerId = null;
+                            }
+                            
+                            return DropdownButtonFormField<String>(
+                              value: _selectedOwnerId,
+                              decoration: const InputDecoration(labelText: 'Chủ rừng', border: OutlineInputBorder()),
+                              items: owners.map((o) => DropdownMenuItem(value: o.id, child: Text('${o.ownerCode} - ${o.ownerName}'))).toList(),
+                              onChanged: (val) => setState(() => _selectedOwnerId = val),
+                              validator: (val) => val == null ? AppStrings.fieldRequired : null,
+                            );
+                          }
                         ),
                         const SizedBox(height: AppSpacing.md),
 
@@ -249,6 +319,7 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
             ),
           ),
         ),
+       ),
       ),
     );
   }

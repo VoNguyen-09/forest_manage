@@ -3,8 +3,14 @@ import 'package:go_router/go_router.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
 import 'package:forest_carbon_platform/config/theme.dart';
 import 'package:forest_carbon_platform/core/models/forest_owner_model.dart';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import 'package:uuid/uuid.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_card.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_button.dart';
+import 'package:forest_carbon_platform/shared/widgets/loading_overlay.dart';
+import 'package:forest_carbon_platform/core/services/cloudinary_service.dart';
+import 'package:forest_carbon_platform/core/services/forest_owner_service.dart';
 
 class ForestOwnerFormScreen extends StatefulWidget {
   final ForestOwnerModel? owner;
@@ -25,6 +31,9 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
   late TextEditingController _emailController;
   late TextEditingController _addressController;
   OwnerType _selectedType = OwnerType.individual;
+  bool _isLoading = false;
+  File? _selectedAvatar;
+  String? _avatarUrl;
 
   @override
   void initState() {
@@ -37,6 +46,10 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
     _addressController = TextEditingController(text: widget.owner?.address ?? '');
     if (widget.owner != null) {
       _selectedType = widget.owner!.type;
+      final avatarAttachment = widget.owner!.attachments.where((a) => a['type'] == 'avatar').firstOrNull;
+      if (avatarAttachment != null) {
+        _avatarUrl = avatarAttachment['url'];
+      }
     }
   }
 
@@ -51,13 +64,65 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
     super.dispose();
   }
 
-  void _saveForm() {
-    if (_formKey.currentState!.validate()) {
-      // Mock save success
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Lưu thông tin thành công!')),
+  Future<void> _pickAvatar() async {
+    final result = await FilePicker.platform.pickFiles(type: FileType.image);
+    if (result != null && result.files.single.path != null) {
+      setState(() {
+        _selectedAvatar = File(result.files.single.path!);
+      });
+    }
+  }
+
+  Future<void> _saveForm() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      String? avatarUrl = _avatarUrl;
+      if (_selectedAvatar != null) {
+        avatarUrl = await CloudinaryService.instance.uploadImage(_selectedAvatar!);
+      }
+
+      List<Map<String, String>> attachments = List.from(widget.owner?.attachments ?? []);
+      if (avatarUrl != null) {
+        attachments.removeWhere((a) => a['type'] == 'avatar');
+        attachments.add({'type': 'avatar', 'url': avatarUrl, 'name': 'avatar.jpg'});
+      }
+
+      final owner = ForestOwnerModel(
+        id: widget.owner?.id ?? const Uuid().v4(),
+        ownerCode: _codeController.text.trim(),
+        ownerName: _nameController.text.trim(),
+        type: _selectedType,
+        cccd: _cccdController.text.trim(),
+        phone: _phoneController.text.trim(),
+        email: _emailController.text.trim(),
+        address: _addressController.text.trim(),
+        attachments: attachments,
+        createdAt: widget.owner?.createdAt ?? DateTime.now(),
       );
-      context.pop();
+
+      if (widget.owner == null) {
+        await ForestOwnerService.instance.addOwner(owner);
+      } else {
+        await ForestOwnerService.instance.updateOwner(owner);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Lưu thông tin thành công!')),
+        );
+        context.pop();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Lỗi: $e', style: const TextStyle(color: Colors.white)), backgroundColor: AppColors.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -72,7 +137,9 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.onPrimary,
       ),
-      body: SingleChildScrollView(
+      body: AppLoadingOverlay(
+        isLoading: _isLoading,
+        child: SingleChildScrollView(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Center(
           child: ConstrainedBox(
@@ -93,23 +160,26 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
                         Center(
                           child: Stack(
                             children: [
-                              CircleAvatar(
-                                radius: 50,
-                                backgroundColor: AppColors.primary.withOpacity(0.1),
-                                child: const Icon(Icons.person, size: 50, color: AppColors.primary),
-                              ),
-                              Positioned(
-                                bottom: 0,
-                                right: 0,
-                                child: CircleAvatar(
-                                  radius: 18,
-                                  backgroundColor: AppColors.tertiary,
-                                  child: IconButton(
-                                    icon: const Icon(Icons.camera_alt, size: 16, color: Colors.white),
-                                    onPressed: () {
-                                      // TODO: Use ImagePicker + CloudinaryService
-                                    },
-                                  ),
+                                CircleAvatar(
+                                  radius: 50,
+                                  backgroundColor: AppColors.primary.withOpacity(0.1),
+                                  backgroundImage: _selectedAvatar != null 
+                                      ? FileImage(_selectedAvatar!) 
+                                      : (_avatarUrl != null ? NetworkImage(_avatarUrl!) as ImageProvider : null),
+                                  child: (_selectedAvatar == null && _avatarUrl == null)
+                                      ? const Icon(Icons.person, size: 50, color: AppColors.primary)
+                                      : null,
+                                ),
+                                Positioned(
+                                  bottom: 0,
+                                  right: 0,
+                                  child: CircleAvatar(
+                                    radius: 18,
+                                    backgroundColor: AppColors.tertiary,
+                                    child: IconButton(
+                                      icon: const Icon(Icons.camera_alt, size: 16, color: Colors.white),
+                                      onPressed: _pickAvatar,
+                                    ),
                                 ),
                               )
                             ],
@@ -231,6 +301,7 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
             ),
           ),
         ),
+       ),
       ),
     );
   }
