@@ -8,10 +8,14 @@ import 'package:forest_carbon_platform/features/notifications/screens/notificati
 import 'package:forest_carbon_platform/features/accounts/screens/account_management_screen.dart';
 import 'package:forest_carbon_platform/features/auth/screens/forgot_password_screen.dart';
 import 'package:forest_carbon_platform/features/auth/screens/change_password_screen.dart';
-// ── TV4 — Carbon Engine & Reports ─────────────────────────────────────────────
 import 'package:forest_carbon_platform/features/carbon/screens/carbon_calculation_screen.dart';
 import 'package:forest_carbon_platform/features/carbon/screens/species_factor_screen.dart';
 import 'package:forest_carbon_platform/features/reports/screens/reports_screen.dart';
+import 'package:forest_carbon_platform/features/forest_owners/screens/forest_owners_screen.dart';
+import 'package:forest_carbon_platform/features/forest_owners/screens/forest_owner_form_screen.dart';
+import 'package:forest_carbon_platform/features/forest_projects/screens/forest_projects_screen.dart';
+import 'package:forest_carbon_platform/features/forest_projects/screens/forest_project_form_screen.dart';
+import 'package:forest_carbon_platform/features/map/screens/map_screen.dart';
 
 final GoRouter appRouter = GoRouter(
   initialLocation: AppRoutes.login,
@@ -87,11 +91,42 @@ final GoRouter appRouter = GoRouter(
       name: 'reports',
       builder: (context, state) => const ReportsScreen(),
     ),
+
+    // ── Forest Owners ──────────────────────────────
+    GoRoute(
+      path: AppRoutes.forestOwners,
+      name: 'forestOwners',
+      builder: (context, state) => const ForestOwnersScreen(),
+    ),
+    GoRoute(
+      path: AppRoutes.forestOwnerAdd,
+      name: 'forestOwnerAdd',
+      builder: (context, state) => const ForestOwnerFormScreen(),
+    ),
+
+    // ── Forest Projects ─────────────────────────────
+    GoRoute(
+      path: AppRoutes.forestProjects,
+      name: 'forestProjects',
+      builder: (context, state) => const ForestProjectsScreen(),
+    ),
+    GoRoute(
+      path: AppRoutes.forestProjectAdd,
+      name: 'forestProjectAdd',
+      builder: (context, state) => const ForestProjectFormScreen(),
+    ),
+
+    // ── Map ─────────────────────────────────────────
+    GoRoute(
+      path: AppRoutes.map,
+      name: 'map',
+      builder: (context, state) => const MapScreen(),
+    ),
   ],
 
-  // TODO: Add all routes as features are built
-  // GoRoute(path: AppRoutes.map, ...)
-  // GoRoute(path: AppRoutes.forestOwners, ...)
+  // TODO: Add remaining routes as features are built
+  // GoRoute(path: AppRoutes.forestOwnerDetail, ...)
+  // GoRoute(path: AppRoutes.forestProjectDetail, ...)
   // GoRoute(path: AppRoutes.logbook, ...)
   // GoRoute(path: AppRoutes.inventory, ...)
   // GoRoute(path: AppRoutes.checkin, ...)

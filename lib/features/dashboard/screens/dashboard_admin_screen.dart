@@ -3,6 +3,7 @@ import 'package:forest_carbon_platform/config/theme.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_card.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:go_router/go_router.dart';
 
 class DashboardAdminScreen extends StatelessWidget {
   const DashboardAdminScreen({super.key});
@@ -18,6 +19,21 @@ class DashboardAdminScreen extends StatelessWidget {
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.onPrimary,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.map_outlined),
+            tooltip: 'Xem Bản đồ',
+            onPressed: () => context.push(AppRoutes.map),
+          ),
+          IconButton(
+            icon: const Icon(Icons.people_outline),
+            tooltip: 'Quản lý Chủ rừng',
+            onPressed: () => context.push(AppRoutes.forestOwners),
+          ),
+          IconButton(
+            icon: const Icon(Icons.folder_outlined),
+            tooltip: 'Quản lý Dự án',
+            onPressed: () => context.push(AppRoutes.forestProjects),
+          ),
           IconButton(
             icon: const Icon(Icons.notifications_outlined),
             onPressed: () {},
