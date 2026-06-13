@@ -152,6 +152,13 @@ dependencies:
 | File Manager UI | Upload, preview, nhóm tài liệu | 3 |
 | Account Management | CRUD tài khoản, trạng thái, phân quyền | 3 |
 
+
+Nền tảng kiến trúc UI: Đã setup xong file constants.dart (quy chuẩn Strings, Routes) và Base UI (Colors, Theme, AppButton, AppCard).
+Module Authentication: Đã code xong form Đăng nhập (login_screen), Quên mật khẩu (forgot_password_screen), và Đổi mật khẩu (change_password_screen) với đầy đủ validate form.
+Module Dashboard:
+Hoàn thiện UI Dashboard Admin tích hợp biểu đồ fl_chart (PieChart, BarChart hiển thị carbon, diện tích, cây trồng).
+Hoàn thiện UI Dashboard Chủ Rừng có KPI Cards và list hiển thị nhật ký gần nhất.
+Module File Manager: Dựng xong giao diện Quản lý tài liệu có tab lọc theo danh mục (Pháp lý, Hiện trường, Báo cáo...) và Popup giả lập tiến trình Upload file.
 #### Thành viên 2 — GIS & Forest Data
 
 | Task | Mô tả | Tuần |

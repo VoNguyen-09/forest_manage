@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:forest_carbon_platform/app.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
 
 // TODO (TV4 — Tuần 1):
 // 1. Chạy: flutter pub add firebase_core firebase_auth cloud_firestore firebase_messaging
@@ -10,10 +12,10 @@ import 'package:forest_carbon_platform/app.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ── Firebase init (uncomment sau khi TV4 setup) ──────────────────────────
-  // await Firebase.initializeApp(
-  //   options: DefaultFirebaseOptions.currentPlatform,
-  // );
+
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
 
   // ── Hive init (TV3 setup) ─────────────────────────────────────────────────
   // await Hive.initFlutter();
