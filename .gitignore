@@ -52,7 +52,7 @@ firebase_options.dart
 # ── Environment / Secrets (BẮT BUỘC) ────────────────────────────────────────
 .env
 .env.*
-lib/config/secrets.dart
+lib/config/secrets.local.dart
 
 # ── Flutter build ─────────────────────────────────────────────────────────────
 build/

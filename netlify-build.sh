@@ -13,4 +13,6 @@ export PATH="$FLUTTER_HOME/bin:$FLUTTER_HOME/bin/cache/dart-sdk/bin:$PATH"
 flutter --version
 flutter config --enable-web
 flutter pub get
-flutter build web --release --base-href /
+flutter build web --release --base-href / \
+  --dart-define=CLOUDINARY_CLOUD_NAME="${CLOUDINARY_CLOUD_NAME:-}" \
+  --dart-define=CLOUDINARY_UPLOAD_PRESET="${CLOUDINARY_UPLOAD_PRESET:-}"
