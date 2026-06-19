@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:cloudinary_public/cloudinary_public.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:path/path.dart' as p;
@@ -21,15 +22,83 @@ class CloudinaryService {
   CloudinaryService._();
   static final CloudinaryService instance = CloudinaryService._();
 
-  CloudinaryPublic? _cloudinary;
-
-  CloudinaryPublic get _client {
-    _cloudinary ??= CloudinaryPublic(
+  CloudinaryPublic _clientFor(String uploadPreset) {
+    return CloudinaryPublic(
       AppSecrets.cloudinaryCloudName,
-      AppSecrets.cloudinaryUploadPreset,
+      uploadPreset,
       cache: false,
     );
-    return _cloudinary!;
+  }
+
+  String get _documentUploadPreset {
+    final documentPreset = AppSecrets.cloudinaryDocumentUploadPreset.trim();
+    return documentPreset.isEmpty
+        ? AppSecrets.cloudinaryUploadPreset.trim()
+        : documentPreset;
+  }
+
+  void _ensureConfigured({required String uploadPreset}) {
+    if (AppSecrets.cloudinaryCloudName.trim().isEmpty) {
+      throw const CloudinaryUploadException(
+        'Chưa cấu hình CLOUDINARY_CLOUD_NAME. '
+        'Chạy Flutter với --dart-define=CLOUDINARY_CLOUD_NAME=<cloud_name>.',
+      );
+    }
+    if (uploadPreset.trim().isEmpty) {
+      throw const CloudinaryUploadException(
+        'Chưa cấu hình Cloudinary upload preset. '
+        'Hãy truyền CLOUDINARY_UPLOAD_PRESET (hoặc '
+        'CLOUDINARY_DOCUMENT_UPLOAD_PRESET cho tài liệu) khi chạy/build app.',
+      );
+    }
+  }
+
+  Future<String> _upload(
+    CloudinaryFile file, {
+    required String uploadPreset,
+  }) async {
+    _ensureConfigured(uploadPreset: uploadPreset);
+
+    try {
+      final response = await _clientFor(uploadPreset).uploadFile(file);
+      return response.secureUrl;
+    } on DioException catch (error) {
+      final statusCode = error.response?.statusCode;
+      final serverMessage = _serverErrorMessage(error.response?.data);
+      final detail =
+          serverMessage == null ? '' : ' Chi tiết Cloudinary: $serverMessage';
+
+      if (statusCode == 401) {
+        throw CloudinaryUploadException(
+          'Cloudinary từ chối xác thực (401). Kiểm tra Cloud Name, Upload '
+          'Preset và bảo đảm preset đang ở chế độ Unsigned.$detail',
+          cause: error,
+        );
+      }
+
+      throw CloudinaryUploadException(
+        'Không thể tải tệp lên Cloudinary'
+        '${statusCode == null ? '' : ' (HTTP $statusCode)'}.${detail}',
+        cause: error,
+      );
+    } on CloudinaryException catch (error) {
+      throw CloudinaryUploadException(
+        'Không thể tải tệp lên Cloudinary. ${error.message}',
+        cause: error,
+      );
+    }
+  }
+
+  String? _serverErrorMessage(Object? data) {
+    if (data is Map) {
+      final error = data['error'];
+      if (error is Map && error['message'] != null) {
+        return error['message'].toString();
+      }
+      if (data['message'] != null) return data['message'].toString();
+    }
+    if (data is String && data.trim().isNotEmpty) return data.trim();
+    return null;
   }
 
   /// Chuyển tên thư mục có ký tự tiếng Việt thành ASCII an toàn cho URL Cloudinary
@@ -69,12 +138,13 @@ class CloudinaryService {
       final compressed = await _compressImage(file);
       if (compressed != null) uploadFile = compressed;
 
-      final response = await _client.uploadFile(
+      final response = await _upload(
         CloudinaryFile.fromFile(
           uploadFile.path,
-          folder: folder,
+          folder: sanitizeFolder(folder),
           resourceType: CloudinaryResourceType.Image,
         ),
+        uploadPreset: AppSecrets.cloudinaryUploadPreset,
       );
 
       // Xóa file nén tạm nếu có
@@ -84,9 +154,9 @@ class CloudinaryService {
         } catch (_) {}
       }
 
-      return response.secureUrl;
-    } on CloudinaryException catch (e) {
-      debugPrint('[CloudinaryService] uploadImage thất bại: ${e.message}');
+      return response;
+    } on CloudinaryUploadException catch (e) {
+      debugPrint('[CloudinaryService] uploadImage thất bại: $e');
       rethrow;
     } catch (e) {
       debugPrint('[CloudinaryService] uploadImage lỗi: $e');
@@ -123,17 +193,20 @@ class CloudinaryService {
       final resourceType = _getResourceType(ext);
       final safeFolder = sanitizeFolder(folder);
 
-      final response = await _client.uploadFile(
+      final response = await _upload(
         CloudinaryFile.fromFile(
           file.path,
           folder: safeFolder,
           resourceType: resourceType,
         ),
+        uploadPreset: resourceType == CloudinaryResourceType.Raw
+            ? _documentUploadPreset
+            : AppSecrets.cloudinaryUploadPreset,
       );
 
-      return response.secureUrl;
-    } on CloudinaryException catch (e) {
-      debugPrint('[CloudinaryService] uploadFile thất bại: ${e.message}');
+      return response;
+    } on CloudinaryUploadException catch (e) {
+      debugPrint('[CloudinaryService] uploadFile thất bại: $e');
       rethrow;
     } catch (e) {
       debugPrint('[CloudinaryService] uploadFile lỗi: $e');
@@ -152,23 +225,35 @@ class CloudinaryService {
       final resourceType = _getResourceType(extension.toLowerCase());
       final safeFolder = sanitizeFolder(folder);
 
-      final response = await _client.uploadFile(
+      final fileName = _withExtension(identifier, extension);
+      final response = await _upload(
         CloudinaryFile.fromBytesData(
           bytes,
-          identifier: identifier,
+          identifier: fileName,
           folder: safeFolder,
           resourceType: resourceType,
         ),
+        uploadPreset: resourceType == CloudinaryResourceType.Raw
+            ? _documentUploadPreset
+            : AppSecrets.cloudinaryUploadPreset,
       );
 
-      return response.secureUrl;
-    } on CloudinaryException catch (e) {
-      debugPrint('[CloudinaryService] uploadBytes thất bại: ${e.message}');
+      return response;
+    } on CloudinaryUploadException catch (e) {
+      debugPrint('[CloudinaryService] uploadBytes thất bại: $e');
       rethrow;
     } catch (e) {
       debugPrint('[CloudinaryService] uploadBytes lỗi: $e');
       rethrow;
     }
+  }
+
+  String _withExtension(String identifier, String extension) {
+    if (extension.isEmpty ||
+        identifier.toLowerCase().endsWith(extension.toLowerCase())) {
+      return identifier;
+    }
+    return '$identifier$extension';
   }
 
   // ── Nội bộ: Nén ảnh xuống < 1MB ─────────────────────────────────────────
@@ -225,7 +310,6 @@ class CloudinaryService {
   }
 
   // ── Nội bộ: Xác định resource type theo phần mở rộng ────────────────────
-  // ── Nội bộ: Xác định resource type theo phần mở rộng ────────────────────
   CloudinaryResourceType _getResourceType(String ext) {
     const imageExts = {
       '.jpg',
@@ -239,8 +323,20 @@ class CloudinaryService {
     const videoExts = {'.mp4', '.mov', '.avi', '.mkv', '.wmv'};
     if (imageExts.contains(ext)) return CloudinaryResourceType.Image;
     if (videoExts.contains(ext)) return CloudinaryResourceType.Video;
-    // Sử dụng Image cho PDF để lách luật khóa public delivery của Cloudinary 
-    if (ext == '.pdf') return CloudinaryResourceType.Image;
+    // PDF và các tài liệu cần đi qua endpoint `raw/upload`.
+    // Ép sang Image có thể khiến preset không khớp và Cloudinary trả 401/400.
+    if (ext == '.pdf') return CloudinaryResourceType.Raw;
     return CloudinaryResourceType.Raw; // DOCX, KML, GeoJSON, ...
   }
+}
+
+/// Lỗi upload đã được chuẩn hoá để UI không hiển thị toàn bộ DioException.
+class CloudinaryUploadException implements Exception {
+  final String message;
+  final Object? cause;
+
+  const CloudinaryUploadException(this.message, {this.cause});
+
+  @override
+  String toString() => message;
 }

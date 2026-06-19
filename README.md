@@ -82,6 +82,24 @@ Xây dựng nền tảng quản lý dữ liệu rừng phục vụ hình thành 
 └─────────────────────────────────────────────────────────┘
 ```
 
+### Cấu hình Cloudinary khi chạy local
+
+Các biến Cloudinary không được lưu trong source. Khi chạy từ IDE/terminal,
+phải truyền đủ Cloud Name và preset **Unsigned**; thiếu một trong hai sẽ khiến
+Cloudinary trả 401 khi tải PDF hoặc tài liệu.
+
+```powershell
+flutter run -d chrome `
+  --dart-define=CLOUDINARY_CLOUD_NAME=<cloud_name> `
+  --dart-define=CLOUDINARY_UPLOAD_PRESET=<unsigned_image_preset> `
+  --dart-define=CLOUDINARY_DOCUMENT_UPLOAD_PRESET=<unsigned_document_preset>
+```
+
+`CLOUDINARY_DOCUMENT_UPLOAD_PRESET` là tùy chọn: nếu bỏ qua, app dùng
+`CLOUDINARY_UPLOAD_PRESET`. Preset dùng cho tài liệu cần cho phép PDF/DOCX
+(và các định dạng tài liệu mà app hỗ trợ). Netlify cũng cần khai báo các biến
+này trong Environment variables trước khi deploy.
+
 ### Pubspec dependencies (gợi ý)
 
 ```yaml
