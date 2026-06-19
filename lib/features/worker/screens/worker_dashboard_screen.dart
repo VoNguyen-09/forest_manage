@@ -562,7 +562,9 @@ class _WorkerLogbookTabState extends State<WorkerLogbookTab> {
         date: _date,
         userId: widget.user.uid,
         projectId: widget.project.id,
-        gps: _gps != null ? GpsPoint(lat: _gps!.latitude, lng: _gps!.longitude) : const GpsPoint(lat: 0, lng: 0),
+        gps: _gps != null
+            ? GpsPoint(lat: _gps!.latitude, lng: _gps!.longitude)
+            : const GpsPoint(lat: 0, lng: 0),
         workType: _workType,
         description: _descriptionController.text.trim(),
         photoUrls: urls,
@@ -604,6 +606,7 @@ class _WorkerLogbookTabState extends State<WorkerLogbookTab> {
               : widget.user.email,
           source: 'workerLogbook',
           sourceLogId: logId,
+          status: 'pending',
           photoUrls: urls,
           createdAt: now,
           updatedAt: now,
@@ -616,7 +619,9 @@ class _WorkerLogbookTabState extends State<WorkerLogbookTab> {
         _date = DateTime.now();
         _descriptionController.clear();
       });
-      widget.onSaved('Đã lưu nhật ký và chuyển PDF sang Hình ảnh hiện trường.');
+      widget.onSaved(
+        'Đã lưu nhật ký và chuyển PDF sang Hình ảnh hiện trường. Chờ chủ rừng gửi Admin.',
+      );
     } catch (e) {
       widget.onError('Không lưu được nhật ký: $e');
     } finally {
@@ -773,9 +778,9 @@ class _WorkerCarbonTabState extends State<WorkerCarbonTab> {
       final List<SpeciesFactor> factors = projectSpecies.isNotEmpty
           ? await _db.listSpeciesFactorsByNames([projectSpecies])
           : <SpeciesFactor>[];
-      
+
       if (!mounted) return;
-      
+
       if (factors.isEmpty && projectSpecies.isNotEmpty) {
         setState(() => _isLoading = false);
         widget.onError(
@@ -783,7 +788,7 @@ class _WorkerCarbonTabState extends State<WorkerCarbonTab> {
         );
         return;
       }
-      
+
       setState(() {
         _factors = factors;
         _selectedFactor = factors.isNotEmpty ? factors.first : null;
@@ -1087,7 +1092,8 @@ class _WorkerGpsMapTabState extends State<WorkerGpsMapTab> {
                   );
                 }).toList(),
               ),
-              if (widget.lastPosition != null || selectedProjectPolygon.isNotEmpty)
+              if (widget.lastPosition != null ||
+                  selectedProjectPolygon.isNotEmpty)
                 MarkerLayer(
                   markers: [
                     if (selectedProjectPolygon.isNotEmpty)
@@ -1136,7 +1142,8 @@ class _WorkerGpsMapTabState extends State<WorkerGpsMapTab> {
               position: widget.lastPosition,
               onToggle: widget.onToggle,
               onRefresh: widget.onRefreshPosition,
-              onToggleSatellite: () => setState(() => _isSatellite = !_isSatellite),
+              onToggleSatellite: () =>
+                  setState(() => _isSatellite = !_isSatellite),
               onJumpToProject: selectedProjectPolygon.isNotEmpty
                   ? () => _jumpToProject(selectedProjectPolygon)
                   : null,
@@ -1538,9 +1545,6 @@ class _PhotoPickerSummary extends StatelessWidget {
     );
   }
 }
-
-
-
 
 class _CarbonPreview extends StatelessWidget {
   final CarbonBreakdownItem item;

@@ -3,11 +3,13 @@ import 'package:go_router/go_router.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
 import 'package:forest_carbon_platform/config/theme.dart';
+import 'package:forest_carbon_platform/core/models/carbon_result_model.dart';
 import 'package:forest_carbon_platform/core/models/forest_owner_model.dart';
 import 'package:forest_carbon_platform/core/models/gps_point.dart';
 import 'package:forest_carbon_platform/core/models/user_model.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_card.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_button.dart';
@@ -15,6 +17,7 @@ import 'package:forest_carbon_platform/shared/widgets/loading_overlay.dart';
 import 'package:forest_carbon_platform/core/services/auth_service.dart';
 import 'package:forest_carbon_platform/core/services/cloudinary_service.dart';
 import 'package:forest_carbon_platform/core/services/forest_owner_service.dart';
+import 'package:forest_carbon_platform/core/services/firestore_service.dart';
 
 class ForestOwnerFormScreen extends StatefulWidget {
   final ForestOwnerModel? owner;
@@ -32,7 +35,6 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
   late TextEditingController _codeController;
   late TextEditingController _forestNameController;
   late TextEditingController _managementProvinceController;
-  late TextEditingController _totalTreesController;
   late TextEditingController _cccdController;
   late TextEditingController _phoneController;
   late TextEditingController _emailController;
@@ -41,6 +43,11 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
   bool _isLoading = false;
   File? _selectedAvatar;
   String? _avatarUrl;
+
+  // Species picker state
+  List<SpeciesFactor> _availableSpecies = [];
+  String? _selectedSpeciesId;
+  int _selectedTotalTrees = 0;
 
   List<GpsPoint> _currentPolygon = [];
   double _currentArea = 0.0;
@@ -53,13 +60,14 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
     _codeController = TextEditingController(text: widget.owner?.ownerCode ?? '');
     _forestNameController = TextEditingController(text: widget.owner?.forestName ?? '');
     _managementProvinceController = TextEditingController(text: widget.owner?.managementProvince ?? '');
-    _totalTreesController = TextEditingController(text: widget.owner != null ? widget.owner!.totalTrees.toString() : '');
     _cccdController = TextEditingController(text: widget.owner?.cccd ?? '');
     _phoneController = TextEditingController(text: widget.owner?.phone ?? '');
     _emailController = TextEditingController(text: widget.owner?.email ?? '');
     _addressController = TextEditingController(text: widget.owner?.address ?? '');
     if (widget.owner != null) {
       _selectedType = widget.owner!.type;
+      _selectedSpeciesId = widget.owner!.assignedSpeciesId;
+      _selectedTotalTrees = widget.owner!.totalTrees;
       final avatarAttachment = widget.owner!.attachments.where((a) => a['type'] == 'avatar').firstOrNull;
       if (avatarAttachment != null) {
         _avatarUrl = avatarAttachment['url'];
@@ -68,6 +76,22 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
       _currentArea = widget.owner!.totalAreaHa;
       _currentPerimeter = widget.owner!.perimeter;
     }
+    _loadAvailableSpecies();
+  }
+
+  Future<void> _loadAvailableSpecies() async {
+    try {
+      final allSpecies = await FirestoreService.instance.listSpeciesFactors();
+      final allOwners = await FirestoreService.instance.listForestOwners();
+      // Collect speciesIds already assigned to OTHER owners (not current one)
+      final assignedIds = allOwners
+          .where((o) => o.id != (widget.owner?.id ?? ''))
+          .map((o) => o.assignedSpeciesId)
+          .whereType<String>()
+          .toSet();
+      final available = allSpecies.where((s) => !assignedIds.contains(s.speciesId)).toList();
+      if (mounted) setState(() => _availableSpecies = available);
+    } catch (_) {}
   }
 
   @override
@@ -76,7 +100,6 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
     _codeController.dispose();
     _forestNameController.dispose();
     _managementProvinceController.dispose();
-    _totalTreesController.dispose();
     _cccdController.dispose();
     _phoneController.dispose();
     _emailController.dispose();
@@ -143,7 +166,8 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
         polygon: _currentPolygon,
         totalAreaHa: _currentArea,
         perimeter: _currentPerimeter,
-        totalTrees: int.tryParse(_totalTreesController.text.replaceAll(',', '')) ?? 0,
+        totalTrees: _selectedTotalTrees,
+        assignedSpeciesId: _selectedSpeciesId,
         createdAt: widget.owner?.createdAt ?? DateTime.now(),
       );
 
@@ -323,11 +347,87 @@ class _ForestOwnerFormScreenState extends State<ForestOwnerFormScreen> {
                           ],
                         ),
                         const SizedBox(height: AppSpacing.md),
-                        TextFormField(
-                          controller: _totalTreesController,
-                          decoration: const InputDecoration(labelText: 'Tổng số cây', border: OutlineInputBorder()),
-                          keyboardType: TextInputType.number,
-                        ),
+                        // Species dropdown
+                        _availableSpecies.isEmpty
+                            ? Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: AppColors.warning.withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: AppColors.warning.withValues(alpha: 0.4)),
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(Icons.info_outline, color: AppColors.warning, size: 18),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        'Tất cả loài cây đã được gán cho chủ rừng khác hoặc chưa có loài nào trong hệ số phát thải.',
+                                        style: TextStyle(color: AppColors.warning, fontSize: 13),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              )
+                            : DropdownButtonFormField<String>(
+                                value: _selectedSpeciesId,
+                                decoration: const InputDecoration(
+                                  labelText: 'Loài cây / Tổng số cây',
+                                  helperText: 'Chọn loài cây từ hệ số phát thải',
+                                  border: OutlineInputBorder(),
+                                  prefixIcon: Icon(Icons.park_outlined),
+                                ),
+                                items: _availableSpecies.map((species) {
+                                  return DropdownMenuItem<String>(
+                                    value: species.speciesId,
+                                    child: Row(
+                                      children: [
+                                        const Icon(Icons.forest, size: 18, color: AppColors.tertiary),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          species.speciesName,
+                                          style: const TextStyle(fontWeight: FontWeight.w600),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          '(${NumberFormat('#,###').format(species.totalTreesCount)} cây)',
+                                          style: TextStyle(color: AppColors.secondary, fontSize: 13),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }).toList(),
+                                onChanged: (val) {
+                                  if (val == null) return;
+                                  final selected = _availableSpecies.firstWhere((s) => s.speciesId == val);
+                                  setState(() {
+                                    _selectedSpeciesId = val;
+                                    _selectedTotalTrees = selected.totalTreesCount;
+                                  });
+                                },
+                                validator: (v) => v == null ? 'Vui lòng chọn loài cây' : null,
+                              ),
+                        if (_selectedSpeciesId != null) ...[
+                          const SizedBox(height: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: AppColors.tertiary.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: AppColors.tertiary.withValues(alpha: 0.3)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.check_circle_outline, color: AppColors.tertiary, size: 18),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Tổng số cây: ${NumberFormat('#,###').format(_selectedTotalTrees)} cây',
+                                  style: const TextStyle(color: AppColors.tertiary, fontWeight: FontWeight.w600),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),

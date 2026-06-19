@@ -68,16 +68,20 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isOwnerOfDoc(userId) 
                   || isPlatformAdmin()
-                  || (isAuth() && resource.data.ownerId == request.auth.uid);
+                  || (isAuth() && resource.data.ownerId == request.auth.uid)
+                  || (isAuth() && resource.data.ownerId == userData().ownerId);
       allow create: if isPlatformAdmin()
-                    || (isAuth() && request.resource.data.ownerId == request.auth.uid);
+                    || (isAuth() && request.resource.data.ownerId == request.auth.uid)
+                    || (isAuth() && request.resource.data.ownerId == userData().ownerId);
       allow update: if isPlatformAdmin()
                     || (isOwnerOfDoc(userId)
                         && !request.resource.data.diff(resource.data).affectedKeys()
                             .hasAny(['role', 'status']))
-                    || (isAuth() && resource.data.ownerId == request.auth.uid && request.resource.data.ownerId == request.auth.uid);
+                    || (isAuth() && resource.data.ownerId == request.auth.uid && request.resource.data.ownerId == request.auth.uid)
+                    || (isAuth() && resource.data.ownerId == userData().ownerId && request.resource.data.ownerId == userData().ownerId);
       allow delete: if isPlatformAdmin()
-                    || (isAuth() && resource.data.ownerId == request.auth.uid);
+                    || (isAuth() && resource.data.ownerId == request.auth.uid)
+                    || (isAuth() && resource.data.ownerId == userData().ownerId);
     }
 
     // ── forestOwners ─────────────────────────────────────────────────────────

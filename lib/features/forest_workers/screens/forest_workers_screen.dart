@@ -30,7 +30,9 @@ class _ForestWorkersScreenState extends State<ForestWorkersScreen> {
   }
 
   String get _currentOwnerId {
-    return AuthService.instance.currentUser?.uid ?? '';
+    // Use ownerId (ForestOwnerModel.id) to match how admin stores workers
+    return AuthService.instance.currentUserModel?.ownerId ?? 
+           AuthService.instance.currentUser?.uid ?? '';
   }
 
   String _displayValue(String? value) {

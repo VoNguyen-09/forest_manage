@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
 import 'package:forest_carbon_platform/config/theme.dart';
 import 'package:forest_carbon_platform/core/models/carbon_result_model.dart';
+import 'package:forest_carbon_platform/core/models/user_model.dart';
+import 'package:forest_carbon_platform/core/services/auth_service.dart';
 import 'package:forest_carbon_platform/core/services/firestore_service.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_card.dart';
 import 'package:forest_carbon_platform/shared/widgets/confirm_dialog.dart';
@@ -10,8 +12,8 @@ import 'package:forest_carbon_platform/shared/widgets/loading_overlay.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 
-/// Species Factor Configuration — chỉ Platform Admin mới truy cập được.
-/// CRUD hệ số loài cây: Keo, Bạch đàn, Thông, ...
+/// Species Factor Configuration.
+/// Platform Admin được cấu hình; Forest Owner chỉ được xem.
 class SpeciesFactorScreen extends StatefulWidget {
   const SpeciesFactorScreen({super.key});
 
@@ -21,13 +23,22 @@ class SpeciesFactorScreen extends StatefulWidget {
 
 class _SpeciesFactorScreenState extends State<SpeciesFactorScreen> {
   final _db = FirestoreService.instance;
+  final _auth = AuthService.instance;
   List<SpeciesFactor> _factors = [];
   bool _loading = false;
+  bool _canManage = false;
 
   @override
   void initState() {
     super.initState();
+    _loadAccess();
     _loadFactors();
+  }
+
+  Future<void> _loadAccess() async {
+    final role = await _auth.getUserRole();
+    if (!mounted) return;
+    setState(() => _canManage = role == UserRole.platformAdmin);
   }
 
   Future<void> _loadFactors() async {
@@ -52,6 +63,7 @@ class _SpeciesFactorScreenState extends State<SpeciesFactorScreen> {
   }
 
   Future<void> _showEditDialog({SpeciesFactor? existing}) async {
+    if (!_canManage) return;
     final result = await showDialog<SpeciesFactor>(
       context: context,
       builder: (_) => _SpeciesFactorDialog(existing: existing),
@@ -76,6 +88,7 @@ class _SpeciesFactorScreenState extends State<SpeciesFactorScreen> {
   }
 
   Future<void> _delete(SpeciesFactor sf) async {
+    if (!_canManage) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AppConfirmDialog(
@@ -119,20 +132,24 @@ class _SpeciesFactorScreenState extends State<SpeciesFactorScreen> {
             ),
           ],
         ),
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: () => _showEditDialog(),
-          icon: const Icon(Icons.add),
-          label: Text(AppStrings.add),
-          backgroundColor: AppColors.tertiary,
-          foregroundColor: AppColors.onPrimary,
-        ),
+        floatingActionButton: _canManage
+            ? FloatingActionButton.extended(
+                onPressed: () => _showEditDialog(),
+                icon: const Icon(Icons.add),
+                label: Text(AppStrings.add),
+                backgroundColor: AppColors.tertiary,
+                foregroundColor: AppColors.onPrimary,
+              )
+            : null,
         body: _factors.isEmpty && !_loading
             ? AppEmptyState(
                 title: 'Chưa có hệ số loài cây',
-                subtitle: 'Thêm hệ số để sử dụng trong tính toán carbon.',
+                subtitle: _canManage
+                    ? 'Thêm hệ số để sử dụng trong tính toán carbon.'
+                    : 'Admin chưa cấu hình hệ số loài cây.',
                 icon: Icons.park_outlined,
-                actionLabel: AppStrings.add,
-                onAction: () => _showEditDialog(),
+                actionLabel: _canManage ? AppStrings.add : null,
+                onAction: _canManage ? () => _showEditDialog() : null,
               )
             : ListView.separated(
                 padding: const EdgeInsets.all(AppSpacing.md),
@@ -140,8 +157,11 @@ class _SpeciesFactorScreenState extends State<SpeciesFactorScreen> {
                 separatorBuilder: (_, _) => const SizedBox(height: 8),
                 itemBuilder: (context, i) => _SpeciesFactorTile(
                   factor: _factors[i],
-                  onEdit: () => _showEditDialog(existing: _factors[i]),
-                  onDelete: () => _delete(_factors[i]),
+                  canManage: _canManage,
+                  onEdit: _canManage
+                      ? () => _showEditDialog(existing: _factors[i])
+                      : null,
+                  onDelete: _canManage ? () => _delete(_factors[i]) : null,
                 ),
               ),
       ),
@@ -153,11 +173,13 @@ class _SpeciesFactorScreenState extends State<SpeciesFactorScreen> {
 
 class _SpeciesFactorTile extends StatelessWidget {
   final SpeciesFactor factor;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
+  final bool canManage;
+  final VoidCallback? onEdit;
+  final VoidCallback? onDelete;
 
   const _SpeciesFactorTile({
     required this.factor,
+    required this.canManage,
     required this.onEdit,
     required this.onDelete,
   });
@@ -166,7 +188,7 @@ class _SpeciesFactorTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final fmt = DateFormat('dd/MM/yyyy');
     return AppCard(
-      onTap: onEdit,
+      onTap: canManage ? onEdit : null,
       child: Row(
         children: [
           Container(
@@ -195,9 +217,9 @@ class _SpeciesFactorTile extends StatelessWidget {
                 ),
                 Text(
                   'Cập nhật: ${fmt.format(factor.updatedAt)}',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: AppColors.secondary,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: AppColors.secondary),
                 ),
               ],
             ),
@@ -210,25 +232,26 @@ class _SpeciesFactorTile extends StatelessWidget {
             ),
             child: Text(
               factor.factor.toStringAsFixed(3),
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(color: AppColors.success, fontWeight: FontWeight.w700),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                color: AppColors.success,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
-          PopupMenuButton<String>(
-            onSelected: (v) {
-              if (v == 'edit') onEdit();
-              if (v == 'delete') onDelete();
-            },
-            itemBuilder: (_) => [
-              const PopupMenuItem(value: 'edit', child: Text('Chỉnh sửa')),
-              const PopupMenuItem(
-                value: 'delete',
-                child: Text('Xóa', style: TextStyle(color: Colors.red)),
-              ),
-            ],
-          ),
+          if (canManage)
+            PopupMenuButton<String>(
+              onSelected: (v) {
+                if (v == 'edit') onEdit?.call();
+                if (v == 'delete') onDelete?.call();
+              },
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: 'edit', child: Text('Chỉnh sửa')),
+                const PopupMenuItem(
+                  value: 'delete',
+                  child: Text('Xóa', style: TextStyle(color: Colors.red)),
+                ),
+              ],
+            ),
         ],
       ),
     );
@@ -256,9 +279,11 @@ class _SpeciesFactorDialogState extends State<_SpeciesFactorDialog> {
     super.initState();
     _nameCtrl = TextEditingController(text: widget.existing?.speciesName ?? '');
     _factorCtrl = TextEditingController(
-        text: widget.existing?.factor.toString() ?? '');
+      text: widget.existing?.factor.toString() ?? '',
+    );
     _treeCountCtrl = TextEditingController(
-        text: widget.existing?.totalTreesCount.toString() ?? '0');
+      text: widget.existing?.totalTreesCount.toString() ?? '0',
+    );
   }
 
   @override
@@ -297,8 +322,9 @@ class _SpeciesFactorDialogState extends State<_SpeciesFactorDialog> {
             TextFormField(
               controller: _nameCtrl,
               decoration: const InputDecoration(labelText: 'Tên loài cây'),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? AppStrings.fieldRequired : null,
+              validator: (v) => (v == null || v.trim().isEmpty)
+                  ? AppStrings.fieldRequired
+                  : null,
             ),
             const SizedBox(height: AppSpacing.md),
             TextFormField(
@@ -307,7 +333,9 @@ class _SpeciesFactorDialogState extends State<_SpeciesFactorDialog> {
                 labelText: 'Hệ số (ví dụ: 0.48)',
                 hintText: '0.00 – 1.00',
               ),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
               validator: (v) {
                 if (v == null || v.isEmpty) return AppStrings.fieldRequired;
                 final n = double.tryParse(v.trim());
@@ -338,10 +366,7 @@ class _SpeciesFactorDialogState extends State<_SpeciesFactorDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: Text(AppStrings.cancel),
         ),
-        ElevatedButton(
-          onPressed: _submit,
-          child: Text(AppStrings.save),
-        ),
+        ElevatedButton(onPressed: _submit, child: Text(AppStrings.save)),
       ],
     );
   }

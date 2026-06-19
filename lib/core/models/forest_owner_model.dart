@@ -18,6 +18,7 @@ class ForestOwnerModel {
   final double totalAreaHa;
   final double perimeter;
   final int totalTrees;
+  final String? assignedSpeciesId;
   final DateTime createdAt;
 
   const ForestOwnerModel({
@@ -36,6 +37,7 @@ class ForestOwnerModel {
     this.totalAreaHa = 0,
     this.perimeter = 0,
     this.totalTrees = 0,
+    this.assignedSpeciesId,
     required this.createdAt,
   });
 
@@ -64,6 +66,7 @@ class ForestOwnerModel {
     totalAreaHa: (json['totalAreaHa'] as num?)?.toDouble() ?? 0.0,
     perimeter: (json['perimeter'] as num?)?.toDouble() ?? 0.0,
     totalTrees: (json['totalTrees'] as num?)?.toInt() ?? 0,
+    assignedSpeciesId: json['assignedSpeciesId'] as String?,
     createdAt: DateTime.parse(json['createdAt'] as String),
   );
 
@@ -83,6 +86,7 @@ class ForestOwnerModel {
     'totalAreaHa': totalAreaHa,
     'perimeter': perimeter,
     'totalTrees': totalTrees,
+    if (assignedSpeciesId != null) 'assignedSpeciesId': assignedSpeciesId,
     'createdAt': createdAt.toIso8601String(),
   };
 
@@ -102,6 +106,7 @@ class ForestOwnerModel {
     double? totalAreaHa,
     double? perimeter,
     int? totalTrees,
+    String? assignedSpeciesId,
     DateTime? createdAt,
   }) {
     return ForestOwnerModel(
@@ -120,6 +125,7 @@ class ForestOwnerModel {
       totalAreaHa: totalAreaHa ?? this.totalAreaHa,
       perimeter: perimeter ?? this.perimeter,
       totalTrees: totalTrees ?? this.totalTrees,
+      assignedSpeciesId: assignedSpeciesId ?? this.assignedSpeciesId,
       createdAt: createdAt ?? this.createdAt,
     );
   }

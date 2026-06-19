@@ -770,6 +770,7 @@ class FirestoreService {
   Future<void> _notifyForNewFileDocument(FileDocumentModel file) async {
     try {
       final category = file.category.trim();
+      final isAdminSubmission = file.status == 'approved';
       final uploader = file.uploadedByName.trim().isEmpty
           ? 'Người dùng'
           : file.uploadedByName.trim();
@@ -779,7 +780,7 @@ class FirestoreService {
       final projectName = project?.projectName ?? 'chưa chọn dự án';
       final ownerId = file.ownerId.isNotEmpty ? file.ownerId : project?.ownerId;
 
-      if (category == 'Hình ảnh hiện trường') {
+      if (category == 'Hình ảnh hiện trường' && isAdminSubmission) {
         await notifyAdmins(
           title: 'Báo cáo hình ảnh hiện trường mới',
           body:
@@ -790,7 +791,7 @@ class FirestoreService {
         return;
       }
 
-      if (category == 'Báo cáo khảo sát') {
+      if (category == 'Báo cáo khảo sát' && isAdminSubmission) {
         await notifyAdmins(
           title: 'Báo cáo khảo sát mới',
           body:
@@ -801,7 +802,8 @@ class FirestoreService {
         return;
       }
 
-      if (category == 'Hồ sơ pháp lý' || category == 'Hồ sơ dự án') {
+      if ((category == 'Hồ sơ pháp lý' || category == 'Hồ sơ dự án') &&
+          isAdminSubmission) {
         await notifyForestOwners(
           ownerId: ownerId,
           title: 'Tài liệu mới từ Admin',
@@ -817,10 +819,24 @@ class FirestoreService {
   }
 
   Future<void> updateFileStatus(String fileId, String status) async {
-    await _filesRef.doc(fileId).update({
-      'status': status,
-      'updatedAt': DateTime.now().toIso8601String(),
-    });
+    final docRef = _filesRef.doc(fileId);
+    final snap = await docRef.get();
+    FileDocumentModel? previous;
+    if (snap.exists) {
+      final data = snap.data()!..['id'] = snap.id;
+      previous = FileDocumentModel.fromJson(data);
+    }
+
+    final now = DateTime.now();
+    await docRef.update({'status': status, 'updatedAt': now.toIso8601String()});
+
+    if (status == 'approved' &&
+        previous != null &&
+        previous.status != 'approved') {
+      await _notifyForNewFileDocument(
+        previous.copyWith(status: status, updatedAt: now),
+      );
+    }
   }
 
   Future<void> deleteFileDocument(String id) async {

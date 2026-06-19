@@ -55,9 +55,9 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
 
   void _showFilePreview(FileDocumentModel file) {
     if (file.url.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Không có URL tài liệu.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Không có URL tài liệu.')));
       return;
     }
 
@@ -93,10 +93,7 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
                   ),
               ],
             ),
-            body: ImageViewerWidget(
-              imageUrl: file.url,
-              imageName: file.name,
-            ),
+            body: ImageViewerWidget(imageUrl: file.url, imageName: file.name),
           ),
         ),
       );
@@ -183,7 +180,8 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
             ),
           ),
           actions: [
-            if ((file.type == 'pdf' || file.type == 'application/pdf') && file.url.isNotEmpty)
+            if ((file.type == 'pdf' || file.type == 'application/pdf') &&
+                file.url.isNotEmpty)
               TextButton.icon(
                 onPressed: () {
                   Navigator.pop(context);
@@ -325,7 +323,9 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
       if (kIsWeb) {
         // Web: fetch bytes → Blob URL → anchor[download] — cách duy nhất hoạt động với cross-origin
         final filename = file.name.isNotEmpty
-            ? file.name.endsWith('.${file.type}') ? file.name : '${file.name}.${file.type}'
+            ? file.name.endsWith('.${file.type}')
+                  ? file.name
+                  : '${file.name}.${file.type}'
             : '${file.type}.${file.type}';
         await triggerDownload(file.url, filename);
       } else {
@@ -389,9 +389,15 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
     ];
 
     bool canUpload = false;
-    if (isAdmin && (_selectedCategory == 'Tất cả' || _selectedCategory == 'Hồ sơ pháp lý' || _selectedCategory == 'Hồ sơ dự án')) {
+    if (isAdmin &&
+        (_selectedCategory == 'Tất cả' ||
+            _selectedCategory == 'Hồ sơ pháp lý' ||
+            _selectedCategory == 'Hồ sơ dự án')) {
       canUpload = true;
-    } else if (isOwner && (_selectedCategory == 'Tất cả' || _selectedCategory == 'Hình ảnh hiện trường' || _selectedCategory == 'Báo cáo khảo sát')) {
+    } else if (isOwner &&
+        (_selectedCategory == 'Tất cả' ||
+            _selectedCategory == 'Hình ảnh hiện trường' ||
+            _selectedCategory == 'Báo cáo khảo sát')) {
       canUpload = true;
     }
 
@@ -401,17 +407,19 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
         title: const Text(AppStrings.fileManager),
         actions: [IconButton(icon: const Icon(Icons.search), onPressed: () {})],
       ),
-      floatingActionButton: canUpload ? FloatingActionButton.extended(
-        onPressed: _showUploadDialog,
-        backgroundColor: AppColors.tertiary,
-        foregroundColor: AppColors.onPrimary,
-        icon: const Icon(Icons.upload),
-        label: const Text(AppStrings.upload),
-      ) : null,
+      floatingActionButton: canUpload
+          ? FloatingActionButton.extended(
+              onPressed: _showUploadDialog,
+              backgroundColor: AppColors.tertiary,
+              foregroundColor: AppColors.onPrimary,
+              icon: const Icon(Icons.upload),
+              label: const Text(AppStrings.upload),
+            )
+          : null,
       body: StreamBuilder<List<FileDocumentModel>>(
         stream: _db.streamFileDocuments(
-          ownerId: isOwner && _currentUserModel?.ownerId.isNotEmpty == true 
-              ? _currentUserModel?.ownerId 
+          ownerId: isOwner && _currentUserModel?.ownerId.isNotEmpty == true
+              ? _currentUserModel?.ownerId
               : null,
           excludePending: isAdmin,
         ),
@@ -566,9 +574,14 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(color: AppColors.warning),
                 ),
-                child: const Text('Chờ duyệt', style: TextStyle(color: AppColors.warning, fontSize: 12)),
+                child: const Text(
+                  'Chờ duyệt',
+                  style: TextStyle(color: AppColors.warning, fontSize: 12),
+                ),
               ),
-            if (file.status == 'approved' && (file.category == 'Hình ảnh hiện trường' || file.category == 'Báo cáo khảo sát'))
+            if (file.status == 'approved' &&
+                (file.category == 'Hình ảnh hiện trường' ||
+                    file.category == 'Báo cáo khảo sát'))
               Container(
                 margin: const EdgeInsets.only(top: 4),
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -577,7 +590,10 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(color: AppColors.success),
                 ),
-                child: const Text('Đã gửi Admin', style: TextStyle(color: AppColors.success, fontSize: 12)),
+                child: const Text(
+                  'Đã gửi Admin',
+                  style: TextStyle(color: AppColors.success, fontSize: 12),
+                ),
               ),
           ],
         ),
@@ -597,10 +613,17 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
           itemBuilder: (context) {
             final isAdmin = _userRole == UserRole.platformAdmin;
             final isOwner = _userRole == UserRole.forestOwner;
-            final canDelete = (isAdmin && (file.category == 'Hồ sơ pháp lý' || file.category == 'Hồ sơ dự án')) ||
-                              (isOwner && (file.category == 'Hình ảnh hiện trường' || file.category == 'Báo cáo khảo sát'));
-            final canApprove = isOwner && file.status == 'pending' && (file.category == 'Hình ảnh hiện trường' || file.category == 'Báo cáo khảo sát');
-            
+            final canDelete =
+                isAdmin ||
+                (isOwner &&
+                    (file.category == 'Hình ảnh hiện trường' ||
+                        file.category == 'Báo cáo khảo sát'));
+            final canApprove =
+                isOwner &&
+                file.status == 'pending' &&
+                (file.category == 'Hình ảnh hiện trường' ||
+                    file.category == 'Báo cáo khảo sát');
+
             return [
               const PopupMenuItem(
                 value: 'view',
@@ -620,8 +643,14 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
                 const PopupMenuItem(
                   value: 'approve',
                   child: ListTile(
-                    leading: Icon(Icons.send_outlined, color: AppColors.success),
-                    title: Text('Gửi Admin', style: TextStyle(color: AppColors.success)),
+                    leading: Icon(
+                      Icons.send_outlined,
+                      color: AppColors.success,
+                    ),
+                    title: Text(
+                      'Gửi Admin',
+                      style: TextStyle(color: AppColors.success),
+                    ),
                   ),
                 ),
               if (canDelete)
@@ -629,7 +658,10 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
                   value: 'delete',
                   child: ListTile(
                     leading: Icon(Icons.delete_outline, color: AppColors.error),
-                    title: Text('Xóa', style: TextStyle(color: AppColors.error)),
+                    title: Text(
+                      'Xóa',
+                      style: TextStyle(color: AppColors.error),
+                    ),
                   ),
                 ),
             ];

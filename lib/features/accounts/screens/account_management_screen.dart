@@ -57,7 +57,7 @@ class _AccountManagementScreenState extends State<AccountManagementScreen> {
           title: const Text('Xóa tài khoản'),
           content: Text(
             'Bạn có chắc chắn muốn xóa tài khoản "${account.email}" không?\n\n'
-            'Hành động này sẽ xóa hoàn toàn hồ sơ Firestore của tài khoản này.',
+            'Hành động này sẽ xóa hoàn toàn hồ sơ Firestore và tài khoản đăng nhập của người này.',
           ),
           actions: [
             TextButton(

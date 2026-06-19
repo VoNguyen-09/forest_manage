@@ -24,8 +24,6 @@ class _AssignWorkersScreenState extends State<AssignWorkersScreen> {
   Set<String> _selectedUids = {};
   bool _initialized = false;
 
-  String get _ownerAuthUid => AuthService.instance.currentUser?.uid ?? '';
-
   void _initSelection(List<UserModel> workers) {
     if (_initialized) return;
     _initialized = true;
@@ -92,7 +90,7 @@ class _AssignWorkersScreenState extends State<AssignWorkersScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: ElevatedButton.icon(
               onPressed: _saving ? null : () async {
-                final snap = await _db.streamWorkersByOwner(_ownerAuthUid).first;
+                final snap = await _db.streamWorkersByOwner(widget.project.ownerId).first;
                 await _save(snap);
               },
               style: ElevatedButton.styleFrom(
@@ -112,7 +110,7 @@ class _AssignWorkersScreenState extends State<AssignWorkersScreen> {
         ],
       ),
       body: StreamBuilder<List<UserModel>>(
-        stream: _db.streamWorkersByOwner(_ownerAuthUid),
+        stream: _db.streamWorkersByOwner(widget.project.ownerId),
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
