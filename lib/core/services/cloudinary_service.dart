@@ -32,6 +32,29 @@ class CloudinaryService {
     return _cloudinary!;
   }
 
+  /// Chuyển tên thư mục có ký tự tiếng Việt thành ASCII an toàn cho URL Cloudinary
+  static String sanitizeFolder(String folder) {
+    const map = {
+      'Hồ sơ pháp lý': 'ho_so_phap_ly',
+      'Hồ sơ dự án': 'ho_so_du_an',
+      'Hình ảnh hiện trường': 'hinh_anh_hien_truong',
+      'Báo cáo khảo sát': 'bao_cao_khao_sat',
+      'field_photos': 'field_photos',
+      'documents': 'documents',
+    };
+    // Tìm key match (ignore case) trước
+    for (final entry in map.entries) {
+      if (folder.endsWith(entry.key)) {
+        final prefix = folder.substring(0, folder.length - entry.key.length);
+        return '$prefix${entry.value}';
+      }
+    }
+    // Fallback: xóa ký tự không phải ASCII an toàn
+    return folder
+        .replaceAll(RegExp(r'[^a-zA-Z0-9_/\-]'), '_')
+        .replaceAll(RegExp(r'_+'), '_');
+  }
+
   // ── Upload 1 ảnh (tự nén < 1MB) ─────────────────────────────────────────
   /// Upload ảnh lên Cloudinary. Tự nén về dưới 1MB trước khi upload.
   /// - [folder]: Thư mục lưu trên Cloudinary (mặc định: 'field_photos').
@@ -78,7 +101,9 @@ class CloudinaryService {
     String folder = 'field_photos',
   }) async {
     if (files.length > 10) {
-      throw ArgumentError('Tối đa 10 ảnh mỗi lần upload. Hiện tại: ${files.length}');
+      throw ArgumentError(
+        'Tối đa 10 ảnh mỗi lần upload. Hiện tại: ${files.length}',
+      );
     }
     final urls = <String>[];
     for (final file in files) {
@@ -92,18 +117,16 @@ class CloudinaryService {
   /// Upload tài liệu tổng quát.
   /// - [folder]: Thư mục lưu (mặc định: 'documents').
   /// - Trả về `secureUrl`.
-  Future<String> uploadFile(
-    File file, {
-    String folder = 'documents',
-  }) async {
+  Future<String> uploadFile(File file, {String folder = 'documents'}) async {
     try {
       final ext = p.extension(file.path).toLowerCase();
       final resourceType = _getResourceType(ext);
+      final safeFolder = sanitizeFolder(folder);
 
       final response = await _client.uploadFile(
         CloudinaryFile.fromFile(
           file.path,
-          folder: folder,
+          folder: safeFolder,
           resourceType: resourceType,
         ),
       );
@@ -114,6 +137,36 @@ class CloudinaryService {
       rethrow;
     } catch (e) {
       debugPrint('[CloudinaryService] uploadFile lỗi: $e');
+      rethrow;
+    }
+  }
+
+  /// Upload dữ liệu dạng bytes, dùng cho PDF sinh trong app hoặc file picker web.
+  Future<String> uploadBytes(
+    List<int> bytes, {
+    required String identifier,
+    String folder = 'documents',
+    String extension = '',
+  }) async {
+    try {
+      final resourceType = _getResourceType(extension.toLowerCase());
+      final safeFolder = sanitizeFolder(folder);
+
+      final response = await _client.uploadFile(
+        CloudinaryFile.fromBytesData(
+          bytes,
+          identifier: identifier,
+          folder: safeFolder,
+          resourceType: resourceType,
+        ),
+      );
+
+      return response.secureUrl;
+    } on CloudinaryException catch (e) {
+      debugPrint('[CloudinaryService] uploadBytes thất bại: ${e.message}');
+      rethrow;
+    } catch (e) {
+      debugPrint('[CloudinaryService] uploadBytes lỗi: $e');
       rethrow;
     }
   }
@@ -172,11 +225,22 @@ class CloudinaryService {
   }
 
   // ── Nội bộ: Xác định resource type theo phần mở rộng ────────────────────
+  // ── Nội bộ: Xác định resource type theo phần mở rộng ────────────────────
   CloudinaryResourceType _getResourceType(String ext) {
-    const imageExts = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif'};
+    const imageExts = {
+      '.jpg',
+      '.jpeg',
+      '.png',
+      '.gif',
+      '.webp',
+      '.heic',
+      '.heif',
+    };
     const videoExts = {'.mp4', '.mov', '.avi', '.mkv', '.wmv'};
     if (imageExts.contains(ext)) return CloudinaryResourceType.Image;
     if (videoExts.contains(ext)) return CloudinaryResourceType.Video;
-    return CloudinaryResourceType.Raw; // PDF, DOCX, KML, GeoJSON, ...
+    // Sử dụng Image cho PDF để lách luật khóa public delivery của Cloudinary 
+    if (ext == '.pdf') return CloudinaryResourceType.Image;
+    return CloudinaryResourceType.Raw; // DOCX, KML, GeoJSON, ...
   }
 }

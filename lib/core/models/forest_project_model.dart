@@ -1,18 +1,6 @@
+import 'package:forest_carbon_platform/core/models/gps_point.dart';
+
 enum ProjectStatus { draft, surveying, active, suspended }
-
-class GpsPoint {
-  final double lat;
-  final double lng;
-
-  const GpsPoint({required this.lat, required this.lng});
-
-  factory GpsPoint.fromJson(Map<String, dynamic> json) => GpsPoint(
-    lat: (json['lat'] as num).toDouble(),
-    lng: (json['lng'] as num).toDouble(),
-  );
-
-  Map<String, dynamic> toJson() => {'lat': lat, 'lng': lng};
-}
 
 class ForestProjectModel {
   final String id;

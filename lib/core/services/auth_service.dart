@@ -1,10 +1,13 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
 import 'package:forest_carbon_platform/core/models/user_model.dart';
+import 'package:forest_carbon_platform/firebase_options.dart';
 
 /// AuthService — TV4
-/// Bao gồm: signIn, signOut, getCurrentUser, getUserRole, OTP email flow,
+/// Bao gồm: signIn, signOut, getCurrentUser, getUserRole,
 /// và stream authStateChanges để TV1 lắng nghe trạng thái đăng nhập.
 class AuthService {
   AuthService._();
@@ -23,10 +26,12 @@ class AuthService {
   /// Người dùng hiện tại (có thể null nếu chưa đăng nhập).
   User? get currentUser => _auth.currentUser;
 
+  /// Cached UserModel (được set sau khi đăng nhập thành công).
+  UserModel? currentUserModel;
+
   // ── Sign In / Out ─────────────────────────────────────────────────────────
 
   /// Đăng nhập bằng email + password.
-  /// Trả về [UserCredential] hoặc ném [FirebaseAuthException].
   Future<UserCredential> signIn({
     required String email,
     required String password,
@@ -39,6 +44,7 @@ class AuthService {
 
   /// Đăng xuất khỏi Firebase Auth.
   Future<void> signOut() async {
+    currentUserModel = null;
     await _auth.signOut();
   }
 
@@ -67,7 +73,7 @@ class AuthService {
   }
 
   /// Lấy [UserModel] đầy đủ của người dùng hiện tại từ Firestore.
-  Future<UserModel?> getCurrentUserModel() async {
+  Future<UserModel?> getCurrentUserModel({bool throwOnError = false}) async {
     final uid = currentUser?.uid;
     if (uid == null) return null;
 
@@ -79,57 +85,41 @@ class AuthService {
 
       if (!snap.exists || snap.data() == null) return null;
       final data = snap.data()!..['uid'] = uid;
-      return UserModel.fromJson(data);
-    } catch (_) {
+      final model = UserModel.fromJson(data);
+      currentUserModel = model;
+      return model;
+    } catch (e) {
+      if (throwOnError) rethrow;
       return null;
     }
   }
 
-  // ── Password Reset (OTP flow) ─────────────────────────────────────────────
-
-  /// Gửi email đặt lại mật khẩu — Firebase dùng link, hoạt động như OTP flow.
-  Future<void> sendPasswordResetEmail(String email) async {
-    await _auth.sendPasswordResetEmail(email: email.trim());
-  }
-
-  /// Đổi mật khẩu sau khi đăng nhập (yêu cầu re-authenticate nếu token cũ).
-  Future<void> changePassword({
-    required String currentPassword,
-    required String newPassword,
-  }) async {
-    final user = _auth.currentUser;
-    if (user == null || user.email == null) {
-      throw FirebaseAuthException(
-        code: 'no-user',
-        message: 'Không tìm thấy người dùng.',
-      );
-    }
-
-    // Re-authenticate
-    final credential = EmailAuthProvider.credential(
-      email: user.email!,
-      password: currentPassword,
-    );
-    await user.reauthenticateWithCredential(credential);
-    await user.updatePassword(newPassword);
-  }
-
-  // ── User Management (Admin only) ──────────────────────────────────────────
+  // ── User Management ───────────────────────────────────────────────────────
 
   /// Tạo user mới trong Firebase Auth + ghi UserModel vào Firestore.
-  /// Chỉ Platform Admin mới được gọi.
   Future<String> createUser({
     required String email,
     required String password,
     required String fullName,
     required String phone,
     required UserRole role,
+    String ownerId = '',
+    String ownerName = '',
+    String forestName = '',
+    String managementProvince = '',
+    double totalAreaHa = 0,
+    String workerCode = '',
+    String workerAssignment = '',
+    List<String> assignedProjectIds = const [],
   }) async {
-    // Tạo tài khoản Firebase Auth
-    final cred = await _auth.createUserWithEmailAndPassword(
-      email: email.trim(),
+    final normalizedEmail = email.trim().toLowerCase();
+    final secondaryAuth = await _getUserCreationAuth();
+
+    final cred = await secondaryAuth.createUserWithEmailAndPassword(
+      email: normalizedEmail,
       password: password,
     );
+    await secondaryAuth.signOut();
 
     final uid = cred.user!.uid;
     final now = DateTime.now();
@@ -138,18 +128,65 @@ class AuthService {
       uid: uid,
       fullName: fullName,
       phone: phone,
-      email: email.trim(),
+      email: normalizedEmail,
       role: role,
       status: UserStatus.active,
+      ownerId: ownerId,
+      ownerName: ownerName,
+      forestName: forestName,
+      managementProvince: managementProvince,
+      totalAreaHa: totalAreaHa,
+      workerCode: workerCode,
+      workerAssignment: workerAssignment,
+      assignedProjectIds: assignedProjectIds,
       createdAt: now,
     );
 
-    // Lưu vào Firestore
     await _db
         .collection(FirestoreCollections.users)
         .doc(uid)
         .set(model.toJson());
 
     return uid;
+  }
+
+  /// Xóa user: xóa profile Firestore + tài khoản Firebase Auth.
+  /// Dùng secondary app để xóa Auth mà không ảnh hưởng session hiện tại.
+  Future<void> deleteUserWithCleanup(String uid, {String? email, String? password}) async {
+    // 1. Xóa Firestore profile
+    try {
+      await _db.collection(FirestoreCollections.users).doc(uid).delete();
+    } catch (e) {
+      debugPrint('[AuthService] deleteUser - Firestore delete failed: $e');
+    }
+
+    // 2. Thử xóa Firebase Auth account qua secondary app (nếu có email)
+    if (email != null && email.isNotEmpty && password != null) {
+      try {
+        final secondaryAuth = await _getUserCreationAuth();
+        final cred = await secondaryAuth.signInWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+        await cred.user?.delete();
+        await secondaryAuth.signOut();
+      } catch (e) {
+        debugPrint('[AuthService] deleteUser - Auth delete via secondary failed: $e');
+        // Non-critical – profile already deleted from Firestore
+      }
+    }
+  }
+
+  Future<FirebaseAuth> _getUserCreationAuth() async {
+    const appName = 'userCreation';
+    try {
+      return FirebaseAuth.instanceFor(app: Firebase.app(appName));
+    } catch (_) {
+      final app = await Firebase.initializeApp(
+        name: appName,
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+      return FirebaseAuth.instanceFor(app: app);
+    }
   }
 }

@@ -1,0 +1,1670 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
+
+import 'package:forest_carbon_platform/config/constants.dart';
+import 'package:forest_carbon_platform/config/theme.dart';
+import 'package:forest_carbon_platform/core/models/carbon_result_model.dart';
+import 'package:forest_carbon_platform/core/models/file_document_model.dart';
+import 'package:forest_carbon_platform/core/models/forest_project_model.dart';
+import 'package:forest_carbon_platform/core/models/forest_owner_model.dart';
+import 'package:forest_carbon_platform/core/models/gps_point.dart';
+import 'package:forest_carbon_platform/core/models/log_entry_model.dart';
+import 'package:forest_carbon_platform/core/models/user_model.dart';
+import 'package:forest_carbon_platform/core/models/worker_location_model.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:forest_carbon_platform/core/services/auth_service.dart';
+import 'package:forest_carbon_platform/core/services/cloudinary_service.dart';
+import 'package:forest_carbon_platform/core/services/firestore_service.dart';
+import 'package:forest_carbon_platform/features/worker/services/field_log_pdf_service.dart';
+import 'package:forest_carbon_platform/shared/widgets/app_button.dart';
+import 'package:forest_carbon_platform/shared/widgets/app_card.dart';
+
+class WorkerDashboardScreen extends StatefulWidget {
+  const WorkerDashboardScreen({super.key});
+
+  @override
+  State<WorkerDashboardScreen> createState() => _WorkerDashboardScreenState();
+}
+
+class _WorkerDashboardScreenState extends State<WorkerDashboardScreen>
+    with WidgetsBindingObserver {
+  final _auth = AuthService.instance;
+  final _db = FirestoreService.instance;
+
+  UserModel? _user;
+  ForestOwnerModel? _owner;
+  List<ForestProjectModel> _projects = [];
+  List<ForestProjectModel> _allOwnerProjects = [];
+  ForestProjectModel? _selectedProject;
+  int _tabIndex = 0;
+  bool _isLoading = true;
+  bool _gpsSharing = false;
+  Timer? _gpsTimer;
+  Position? _lastPosition;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _loadInitialData();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _gpsTimer?.cancel();
+    final uid = _user?.uid;
+    if (uid != null && uid.isNotEmpty) {
+      _db.setWorkerOffline(uid);
+    }
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      final uid = _user?.uid;
+      if (uid != null && uid.isNotEmpty) _db.setWorkerOffline(uid);
+    }
+  }
+
+  Future<void> _loadInitialData() async {
+    setState(() => _isLoading = true);
+    try {
+      final user = await _auth.getCurrentUserModel(throwOnError: true);
+      if (user == null) {
+        throw StateError('Không tìm thấy hồ sơ người dùng.');
+      }
+      final projects = user.assignedProjectIds.isEmpty
+          ? <ForestProjectModel>[]
+          : await _db.listForestProjectsByIds(user.assignedProjectIds);
+      final effectiveOwnerId = projects.isNotEmpty
+          ? projects.first.ownerId
+          : user.ownerId;
+      ForestOwnerModel? owner;
+      List<ForestProjectModel> allOwnerProjects = [];
+      if (effectiveOwnerId.isNotEmpty) {
+        owner = await _db.getForestOwner(effectiveOwnerId);
+        allOwnerProjects = await _db.listForestProjects(
+          ownerId: effectiveOwnerId,
+        );
+      }
+      final resolvedProjects = projects
+          .map(
+            (project) =>
+                _resolveProjectWithLatestBoundary(project, allOwnerProjects),
+          )
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _user = user;
+        _owner = owner;
+        _allOwnerProjects = allOwnerProjects;
+        _projects = resolvedProjects;
+        _selectedProject = resolvedProjects.isNotEmpty
+            ? resolvedProjects.first
+            : null;
+        _isLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      _showError('Không tải được dữ liệu worker: $e');
+    }
+  }
+
+  ForestProjectModel _resolveProjectWithLatestBoundary(
+    ForestProjectModel project,
+    List<ForestProjectModel> allOwnerProjects,
+  ) {
+    final sameId = allOwnerProjects.where((p) => p.id == project.id);
+    if (sameId.isNotEmpty) return sameId.first;
+
+    if (project.polygon.length >= 3) return project;
+
+    final sameName = allOwnerProjects.where(
+      (p) =>
+          p.projectName.trim().toLowerCase() ==
+              project.projectName.trim().toLowerCase() &&
+          p.polygon.length >= 3,
+    );
+    if (sameName.isNotEmpty) return sameName.first;
+
+    return project;
+  }
+
+  Future<void> _refreshProjectBoundaries() async {
+    final current = _selectedProject;
+    if (current == null) return;
+    try {
+      final latestSelected = await _db.getForestProject(current.id);
+      final ownerId = latestSelected?.ownerId.isNotEmpty == true
+          ? latestSelected!.ownerId
+          : current.ownerId;
+      final allOwnerProjects = ownerId.isNotEmpty
+          ? await _db.listForestProjects(ownerId: ownerId)
+          : _allOwnerProjects;
+      final resolvedCurrent = _resolveProjectWithLatestBoundary(
+        latestSelected ?? current,
+        allOwnerProjects,
+      );
+      if (!mounted) return;
+      setState(() {
+        _allOwnerProjects = allOwnerProjects;
+        _selectedProject = resolvedCurrent;
+        _projects = _projects
+            .map(
+              (project) => project.id == current.id ? resolvedCurrent : project,
+            )
+            .toList();
+      });
+    } catch (e) {
+      _showError('Không tải lại được ranh giới dự án: $e');
+    }
+  }
+
+  Future<Position> _getCurrentPosition() async {
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      throw StateError('Chưa cấp quyền GPS cho ứng dụng.');
+    }
+    final enabled = await Geolocator.isLocationServiceEnabled();
+    if (!enabled) {
+      throw StateError('GPS trên điện thoại đang tắt.');
+    }
+    final position = await Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+    );
+    if (mounted) setState(() => _lastPosition = position);
+    return position;
+  }
+
+  Future<void> _toggleGpsSharing() async {
+    if (_gpsSharing) {
+      _gpsTimer?.cancel();
+      _gpsTimer = null;
+      setState(() => _gpsSharing = false);
+      final uid = _user?.uid;
+      if (uid != null && uid.isNotEmpty) await _db.setWorkerOffline(uid);
+      return;
+    }
+
+    try {
+      await _publishWorkerLocation();
+      _gpsTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+        _publishWorkerLocation().catchError(
+          (e) => _showError('Không cập nhật được GPS: $e'),
+        );
+      });
+      setState(() => _gpsSharing = true);
+    } catch (e) {
+      _showError('Không bật được GPS: $e');
+    }
+  }
+
+  Future<void> _publishWorkerLocation() async {
+    final user = _user;
+    final project = _selectedProject;
+    if (user == null || project == null) {
+      throw StateError('Worker chưa được gắn với dự án.');
+    }
+    final pos = await _getCurrentPosition();
+    await _db.saveWorkerLocation(
+      WorkerLocationModel(
+        workerId: user.uid,
+        workerName: user.fullName.isNotEmpty ? user.fullName : user.email,
+        ownerId: project.ownerId,
+        projectId: project.id,
+        lat: pos.latitude,
+        lng: pos.longitude,
+        accuracy: pos.accuracy,
+        isOnline: true,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: AppColors.error),
+    );
+  }
+
+  void _showSuccess(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: AppColors.success),
+    );
+  }
+
+  Future<void> _logout() async {
+    _gpsTimer?.cancel();
+    final uid = _user?.uid;
+    if (uid != null && uid.isNotEmpty) await _db.setWorkerOffline(uid);
+    await _auth.signOut();
+    if (mounted) context.go(AppRoutes.login);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final project = _selectedProject;
+    return Scaffold(
+      backgroundColor: AppColors.neutral,
+      appBar: AppBar(
+        toolbarHeight: 68,
+        titleSpacing: AppSpacing.md,
+        title: Row(
+          children: [
+            const Text('Forest Worker'),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(child: _AppBarProjectTitle(project: _selectedProject)),
+          ],
+        ),
+        actions: [
+          if (_user != null)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.only(right: 8.0),
+                child: Text(
+                  _user!.fullName.isNotEmpty ? _user!.fullName : _user!.email,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ),
+          IconButton(
+            tooltip: AppStrings.logout,
+            onPressed: _logout,
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tabIndex,
+        backgroundColor: AppColors.surface,
+        indicatorColor: AppColors.neutral,
+        onDestinationSelected: (index) {
+          setState(() => _tabIndex = index);
+          if (index == 2) {
+            _refreshProjectBoundaries();
+          }
+        },
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.edit_note_outlined),
+            selectedIcon: Icon(Icons.edit_note),
+            label: 'Nhật ký',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.eco_outlined),
+            selectedIcon: Icon(Icons.eco),
+            label: 'Carbon',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.gps_fixed_outlined),
+            selectedIcon: Icon(Icons.gps_fixed),
+            label: 'GPS',
+          ),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _projects.isEmpty
+          ? _EmptyWorkerState(onRefresh: _loadInitialData)
+          : _tabIndex == 2
+          ? WorkerGpsMapTab(
+              isSharing: _gpsSharing,
+              lastPosition: _lastPosition,
+              owner: _owner,
+              selectedProject: project!,
+              allOwnerProjects: _allOwnerProjects,
+              onToggle: () => _toggleGpsSharing(),
+              onRefreshPosition: () {
+                _publishWorkerLocation().catchError(
+                  (e) => _showError('Không cập nhật được GPS: $e'),
+                );
+              },
+            )
+          : RefreshIndicator(
+              onRefresh: _loadInitialData,
+              child: ListView(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                children: [
+                  _WorkerSummary(user: _user, project: project),
+                  const SizedBox(height: AppSpacing.md),
+                  if (_tabIndex == 0)
+                    WorkerLogbookTab(
+                      user: _user!,
+                      project: project!,
+                      getPosition: _getCurrentPosition,
+                      onSaved: _showSuccess,
+                      onError: _showError,
+                    )
+                  else
+                    WorkerCarbonTab(
+                      user: _user!,
+                      project: project!,
+                      onSaved: _showSuccess,
+                      onError: _showError,
+                    ),
+                ],
+              ),
+            ),
+    );
+  }
+}
+
+class _AppBarProjectTitle extends StatelessWidget {
+  final ForestProjectModel? selectedProject;
+
+  const _AppBarProjectTitle({required ForestProjectModel? project})
+    : selectedProject = project;
+
+  @override
+  Widget build(BuildContext context) {
+    final projectName = selectedProject?.projectName;
+    if (projectName == null || projectName.trim().isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 460),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.forest_outlined,
+              size: 20,
+              color: AppColors.onPrimary,
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Flexible(
+              child: Text(
+                projectName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: AppColors.onPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WorkerSummary extends StatelessWidget {
+  final UserModel? user;
+  final ForestProjectModel? project;
+
+  const _WorkerSummary({required this.user, required this.project});
+
+  @override
+  Widget build(BuildContext context) {
+    final name = user?.fullName.isNotEmpty == true
+        ? user!.fullName
+        : user?.email ?? 'Forest worker';
+    final forestName = user?.forestName.isNotEmpty == true
+        ? user!.forestName
+        : project?.projectName ?? 'Dữ liệu hiện trường';
+
+    return AppCard(
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppColors.neutral,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Icon(Icons.badge_outlined, color: AppColors.primary),
+          ),
+          const SizedBox(width: AppSpacing.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(name, style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 2),
+                Text(
+                  forestName,
+                  style: Theme.of(context).textTheme.bodySmall,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class WorkerLogbookTab extends StatefulWidget {
+  final UserModel user;
+  final ForestProjectModel project;
+  final Future<Position> Function() getPosition;
+  final ValueChanged<String> onSaved;
+  final ValueChanged<String> onError;
+
+  const WorkerLogbookTab({
+    super.key,
+    required this.user,
+    required this.project,
+    required this.getPosition,
+    required this.onSaved,
+    required this.onError,
+  });
+
+  @override
+  State<WorkerLogbookTab> createState() => _WorkerLogbookTabState();
+}
+
+class _WorkerLogbookTabState extends State<WorkerLogbookTab> {
+  final _formKey = GlobalKey<FormState>();
+  final _descriptionController = TextEditingController();
+  final _picker = ImagePicker();
+  final _db = FirestoreService.instance;
+  final _cloudinary = CloudinaryService.instance;
+  final _pdfService = FieldLogPdfService.instance;
+
+  WorkType _workType = WorkType.care;
+  DateTime _date = DateTime.now();
+  Position? _gps;
+  List<XFile> _photos = [];
+  bool _isSaving = false;
+
+  @override
+  void dispose() {
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant WorkerLogbookTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.project.id != widget.project.id) {
+      setState(() {
+        _gps = null;
+        _photos = [];
+        _descriptionController.clear();
+      });
+    }
+  }
+
+  Future<void> _pickPhotosFromGallery() async {
+    final images = await _picker.pickMultiImage(imageQuality: 82);
+    if (images.isEmpty) return;
+    _appendPhotos(images);
+  }
+
+  Future<void> _takePhotoWithCamera() async {
+    final image = await _picker.pickImage(
+      source: ImageSource.camera,
+      preferredCameraDevice: CameraDevice.rear,
+      imageQuality: 82,
+    );
+    if (image == null) return;
+    _appendPhotos([image]);
+  }
+
+  void _appendPhotos(List<XFile> images) {
+    final next = [..._photos, ...images];
+    if (next.length > 10) {
+      widget.onError('Tối đa 10 ảnh cho mỗi bản ghi nhật ký.');
+    }
+    setState(() => _photos = next.take(10).toList());
+  }
+
+  Future<void> _saveLog() async {
+    if (!_formKey.currentState!.validate()) return;
+    if (_photos.isEmpty) {
+      widget.onError('Vui lòng thêm ít nhất 1 ảnh hiện trường.');
+      return;
+    }
+
+    setState(() => _isSaving = true);
+    try {
+      final urls = <String>[];
+      final photoFiles = _photos.map((x) => File(x.path)).toList();
+      if (_photos.isNotEmpty) {
+        urls.addAll(
+          await _cloudinary.uploadImages(
+            photoFiles,
+            folder: 'field_logs/${widget.project.id}',
+          ),
+        );
+      }
+      final now = DateTime.now();
+      final entry = LogEntryModel(
+        id: '',
+        date: _date,
+        userId: widget.user.uid,
+        projectId: widget.project.id,
+        gps: _gps != null ? GpsPoint(lat: _gps!.latitude, lng: _gps!.longitude) : const GpsPoint(lat: 0, lng: 0),
+        workType: _workType,
+        description: _descriptionController.text.trim(),
+        photoUrls: urls,
+        isSynced: true,
+        createdAt: now,
+        syncedAt: now,
+      );
+      final logId = await _db.saveLogEntry(entry);
+      final savedEntry = entry.copyWith(id: logId, photoUrls: urls);
+      final pdfBytes = await _pdfService.buildFieldLogPdf(
+        user: widget.user,
+        project: widget.project,
+        entry: savedEntry,
+        photoFiles: photoFiles,
+      );
+      final pdfFileName = _buildFieldLogFileName(
+        projectName: widget.project.projectName,
+        date: _date,
+        logId: logId,
+      );
+      final pdfUrl = await _cloudinary.uploadBytes(
+        pdfBytes,
+        identifier: pdfFileName,
+        folder: 'field_log_pdfs/${widget.project.id}',
+        extension: '.pdf',
+      );
+      await _db.saveFileDocument(
+        FileDocumentModel(
+          id: '',
+          name: pdfFileName,
+          category: 'Hình ảnh hiện trường',
+          type: 'pdf',
+          url: pdfUrl,
+          ownerId: widget.project.ownerId,
+          projectId: widget.project.id,
+          uploadedBy: widget.user.uid,
+          uploadedByName: widget.user.fullName.isNotEmpty
+              ? widget.user.fullName
+              : widget.user.email,
+          source: 'workerLogbook',
+          sourceLogId: logId,
+          photoUrls: urls,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        _photos = [];
+        _gps = null;
+        _date = DateTime.now();
+        _descriptionController.clear();
+      });
+      widget.onSaved('Đã lưu nhật ký và chuyển PDF sang Hình ảnh hiện trường.');
+    } catch (e) {
+      widget.onError('Không lưu được nhật ký: $e');
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AppCard(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Viết nhật ký',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: AppSpacing.md),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.calendar_today_outlined),
+                  title: Text(_formatDate(_date)),
+                  trailing: TextButton(
+                    onPressed: _pickDate,
+                    child: const Text('Chọn ngày'),
+                  ),
+                ),
+                DropdownButtonFormField<WorkType>(
+                  initialValue: _workType,
+                  decoration: const InputDecoration(
+                    labelText: 'Loại công việc',
+                    prefixIcon: Icon(Icons.task_alt_outlined),
+                  ),
+                  items: WorkType.values
+                      .map(
+                        (type) => DropdownMenuItem(
+                          value: type,
+                          child: Text(type.label),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    if (value != null) setState(() => _workType = value);
+                  },
+                ),
+                const SizedBox(height: AppSpacing.md),
+                TextFormField(
+                  controller: _descriptionController,
+                  minLines: 3,
+                  maxLines: 6,
+                  decoration: const InputDecoration(
+                    labelText: 'Mô tả công việc',
+                    alignLabelWithHint: true,
+                  ),
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return AppStrings.fieldRequired;
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: AppSpacing.md),
+                _PhotoPickerSummary(
+                  photos: _photos,
+                  onCamera: _takePhotoWithCamera,
+                  onGallery: _pickPhotosFromGallery,
+                  onRemove: (index) {
+                    setState(() => _photos.removeAt(index));
+                  },
+                ),
+                const SizedBox(height: AppSpacing.lg),
+                AppPrimaryButton(
+                  label: 'Lưu nhật ký',
+                  onPressed: () => _saveLog(),
+                  isLoading: _isSaving,
+                  width: double.infinity,
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.md),
+        _RecentLogsList(userId: widget.user.uid),
+      ],
+    );
+  }
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _date,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 1)),
+    );
+    if (picked != null) setState(() => _date = picked);
+  }
+}
+
+class WorkerCarbonTab extends StatefulWidget {
+  final UserModel user;
+  final ForestProjectModel project;
+  final ValueChanged<String> onSaved;
+  final ValueChanged<String> onError;
+
+  const WorkerCarbonTab({
+    super.key,
+    required this.user,
+    required this.project,
+    required this.onSaved,
+    required this.onError,
+  });
+
+  @override
+  State<WorkerCarbonTab> createState() => _WorkerCarbonTabState();
+}
+
+class _WorkerCarbonTabState extends State<WorkerCarbonTab> {
+  final _formKey = GlobalKey<FormState>();
+  final _dbhController = TextEditingController();
+  final _heightController = TextEditingController();
+  final _quantityController = TextEditingController(text: '1');
+  final _db = FirestoreService.instance;
+
+  List<SpeciesFactor> _factors = [];
+  SpeciesFactor? _selectedFactor;
+  bool _isLoading = true;
+  bool _isSaving = false;
+  CarbonBreakdownItem? _preview;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFactors();
+  }
+
+  @override
+  void dispose() {
+    _dbhController.dispose();
+    _heightController.dispose();
+    _quantityController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadFactors() async {
+    setState(() => _isLoading = true);
+    try {
+      // Load only species factors for this project's tree species
+      final projectSpecies = widget.project.treeSpecies.trim();
+      final List<SpeciesFactor> factors = projectSpecies.isNotEmpty
+          ? await _db.listSpeciesFactorsByNames([projectSpecies])
+          : <SpeciesFactor>[];
+      
+      if (!mounted) return;
+      
+      if (factors.isEmpty && projectSpecies.isNotEmpty) {
+        setState(() => _isLoading = false);
+        widget.onError(
+          'Hệ số cho loài cây "$projectSpecies" chưa được cấu hình bởi admin.',
+        );
+        return;
+      }
+      
+      setState(() {
+        _factors = factors;
+        _selectedFactor = factors.isNotEmpty ? factors.first : null;
+        _isLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      widget.onError('Không tải được hệ số loài: $e');
+    }
+  }
+
+  void _calculatePreview() {
+    if (!_formKey.currentState!.validate() || _selectedFactor == null) return;
+    final item = _buildBreakdownItem();
+    setState(() => _preview = item);
+  }
+
+  Future<void> _saveCarbon() async {
+    if (!_formKey.currentState!.validate() || _selectedFactor == null) return;
+    final item = _buildBreakdownItem();
+    setState(() {
+      _preview = item;
+      _isSaving = true;
+    });
+    try {
+      final result = CarbonResultModel(
+        id: '',
+        projectId: widget.project.id,
+        ownerId: widget.project.ownerId,
+        workerId: widget.user.uid,
+        calculatedAt: DateTime.now(),
+        totalBiomassKg: item.biomassKg,
+        carbonStockTon: item.carbonTon,
+        co2eTon: item.co2eTon,
+        breakdown: [item],
+      );
+      await _db.saveCarbonResult(result);
+      if (!mounted) return;
+      widget.onSaved('Đã lưu ước lượng carbon.');
+    } catch (e) {
+      widget.onError('Không lưu được carbon: $e');
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  CarbonBreakdownItem _buildBreakdownItem() {
+    final dbh = double.parse(_dbhController.text.trim());
+    final height = double.parse(_heightController.text.trim());
+    final quantity = int.parse(_quantityController.text.trim());
+    final factor = _selectedFactor!.factor;
+
+    // Bước 1: Biomass của 1 cây (kg)
+    final biomassPerTree = 0.05 * dbh * dbh * height;
+
+    // Bước 2: Tổng sinh khối (kg)
+    final totalBiomass = biomassPerTree * quantity;
+
+    // Bước 3: Carbon Stock (đổi ra tấn)
+    final carbonTon = (totalBiomass * factor) / 1000;
+
+    // Bước 4: CO2e (tấn)
+    final co2eTon = carbonTon * 3.667;
+
+    return CarbonBreakdownItem(
+      species: _selectedFactor!.speciesName,
+      dbh: dbh,
+      height: height,
+      quantity: quantity,
+      biomassFactor: factor,
+      biomassKg: totalBiomass,
+      carbonTon: carbonTon,
+      co2eTon: co2eTon,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AppCard(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Ước lượng carbon',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: AppSpacing.md),
+                DropdownButtonFormField<SpeciesFactor>(
+                  initialValue: _selectedFactor,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Loại cây',
+                    prefixIcon: Icon(Icons.eco_outlined),
+                  ),
+                  items: _factors
+                      .map(
+                        (factor) => DropdownMenuItem(
+                          value: factor,
+                          child: Text(
+                            '${factor.speciesName} (${factor.factor.toStringAsFixed(2)})',
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) => setState(() => _selectedFactor = value),
+                  validator: (value) {
+                    if (value == null) return 'Admin cần cấu hình hệ số loài.';
+                    return null;
+                  },
+                ),
+                const SizedBox(height: AppSpacing.md),
+                TextFormField(
+                  controller: _dbhController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Đường kính (cm)',
+                    prefixIcon: Icon(Icons.straighten),
+                  ),
+                  validator: _positiveNumberValidator,
+                ),
+                const SizedBox(height: AppSpacing.md),
+                TextFormField(
+                  controller: _heightController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Chiều cao (m)',
+                    prefixIcon: Icon(Icons.height),
+                  ),
+                  validator: _positiveNumberValidator,
+                ),
+                const SizedBox(height: AppSpacing.md),
+                TextFormField(
+                  controller: _quantityController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Số lượng',
+                    prefixIcon: Icon(Icons.format_list_numbered),
+                  ),
+                  validator: (value) {
+                    final number = int.tryParse(value?.trim() ?? '');
+                    if (number == null || number <= 0) {
+                      return AppStrings.invalidNumber;
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: AppSpacing.md),
+                if (_preview != null) _CarbonPreview(item: _preview!),
+                const SizedBox(height: AppSpacing.md),
+                OutlinedButton.icon(
+                  onPressed: _calculatePreview,
+                  icon: const Icon(Icons.calculate_outlined),
+                  label: const Text('Tính toán Carbon'),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                AppPrimaryButton(
+                  label: 'Lưu kết quả',
+                  onPressed: () => _saveCarbon(),
+                  isLoading: _isSaving,
+                  width: double.infinity,
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.md),
+        _RecentCarbonList(projectId: widget.project.id),
+      ],
+    );
+  }
+}
+
+class WorkerGpsMapTab extends StatefulWidget {
+  final bool isSharing;
+  final Position? lastPosition;
+  final ForestOwnerModel? owner;
+  final ForestProjectModel selectedProject;
+  final List<ForestProjectModel> allOwnerProjects;
+  final VoidCallback onToggle;
+  final VoidCallback onRefreshPosition;
+
+  const WorkerGpsMapTab({
+    super.key,
+    required this.isSharing,
+    required this.lastPosition,
+    required this.owner,
+    required this.selectedProject,
+    required this.allOwnerProjects,
+    required this.onToggle,
+    required this.onRefreshPosition,
+  });
+
+  @override
+  State<WorkerGpsMapTab> createState() => _WorkerGpsMapTabState();
+}
+
+class _WorkerGpsMapTabState extends State<WorkerGpsMapTab> {
+  final MapController _mapController = MapController();
+  bool _isSatellite = false;
+
+  static const List<Color> _zoneColors = [
+    Color(0xFF006241),
+    Color(0xFF1565C0),
+    Color(0xFFF57C00),
+    Color(0xFF6A1B9A),
+    Color(0xFFAD1457),
+    Color(0xFF00695C),
+    Color(0xFF4E342E),
+  ];
+
+  Color _colorForProject(String projectId) {
+    final hash = projectId.hashCode.abs();
+    return _zoneColors[hash % _zoneColors.length];
+  }
+
+  void _jumpToProject(List<LatLng> polygon) {
+    if (polygon.isEmpty) return;
+    _mapController.move(_polygonCenter(polygon), 15.0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedProject = _projectWithBoundary(
+      widget.selectedProject,
+      widget.allOwnerProjects,
+    );
+    final ownerPolygon = (widget.owner?.polygon.length ?? 0) >= 3
+        ? widget.owner!.polygon.map((p) => LatLng(p.lat, p.lng)).toList()
+        : <LatLng>[];
+
+    final projectPolygons = [
+      ...widget.allOwnerProjects,
+      if (!widget.allOwnerProjects.any((p) => p.id == selectedProject.id))
+        selectedProject,
+    ].where((project) => project.polygon.length >= 3).toList();
+
+    final selectedProjectPolygon = selectedProject.polygon.length >= 3
+        ? selectedProject.polygon.map((p) => LatLng(p.lat, p.lng)).toList()
+        : <LatLng>[];
+
+    final hasBoundaryData =
+        ownerPolygon.isNotEmpty || projectPolygons.isNotEmpty;
+
+    final mapCenter = widget.lastPosition != null
+        ? LatLng(widget.lastPosition!.latitude, widget.lastPosition!.longitude)
+        : selectedProjectPolygon.isNotEmpty
+        ? _polygonCenter(selectedProjectPolygon)
+        : ownerPolygon.isNotEmpty
+        ? _polygonCenter(ownerPolygon)
+        : const LatLng(12.6667, 108.0383);
+
+    return SizedBox.expand(
+      child: Stack(
+        children: [
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: mapCenter,
+              initialZoom: widget.lastPosition != null ? 15.0 : 12.0,
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: _isSatellite
+                    ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                    : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.forest_manage',
+              ),
+              // Vùng rừng của Chủ rừng — nền màu xanh lá nhạt, viền đậm
+              if (ownerPolygon.isNotEmpty)
+                PolygonLayer(
+                  polygons: [
+                    Polygon(
+                      points: ownerPolygon,
+                      color: const Color(0xFF006241).withValues(alpha: 0.12),
+                      borderColor: const Color(0xFF006241),
+                      borderStrokeWidth: 2.5,
+                    ),
+                  ],
+                ),
+              // Các vùng dự án — vẽ đè lên trên vùng rừng
+              PolygonLayer(
+                polygons: projectPolygons.map((project) {
+                  final color = _colorForProject(project.id);
+                  final isSelected = project.id == selectedProject.id;
+                  return Polygon(
+                    points: project.polygon
+                        .map((pt) => LatLng(pt.lat, pt.lng))
+                        .toList(),
+                    color: color.withValues(alpha: isSelected ? 0.34 : 0.18),
+                    borderColor: color,
+                    borderStrokeWidth: isSelected ? 3 : 1.5,
+                  );
+                }).toList(),
+              ),
+              if (widget.lastPosition != null || selectedProjectPolygon.isNotEmpty)
+                MarkerLayer(
+                  markers: [
+                    if (selectedProjectPolygon.isNotEmpty)
+                      Marker(
+                        point: _polygonCenter(selectedProjectPolygon),
+                        width: 40,
+                        height: 40,
+                        child: const Icon(
+                          Icons.location_on,
+                          color: AppColors.info,
+                          size: 36,
+                        ),
+                      ),
+                    if (widget.lastPosition != null)
+                      Marker(
+                        point: LatLng(
+                          widget.lastPosition!.latitude,
+                          widget.lastPosition!.longitude,
+                        ),
+                        width: 40,
+                        height: 40,
+                        child: const Icon(
+                          Icons.location_history,
+                          color: AppColors.error,
+                          size: 32,
+                        ),
+                      ),
+                  ],
+                ),
+            ],
+          ),
+          if (!hasBoundaryData)
+            Positioned(
+              top: AppSpacing.md,
+              left: 92,
+              right: AppSpacing.md,
+              child: _MapNotice(message: 'Dự án chưa có ranh giới bản đồ'),
+            ),
+          Positioned(
+            left: AppSpacing.sm,
+            top: AppSpacing.md,
+            bottom: AppSpacing.md,
+            child: _GpsMapSidebar(
+              isSharing: widget.isSharing,
+              isSatellite: _isSatellite,
+              position: widget.lastPosition,
+              onToggle: widget.onToggle,
+              onRefresh: widget.onRefreshPosition,
+              onToggleSatellite: () => setState(() => _isSatellite = !_isSatellite),
+              onJumpToProject: selectedProjectPolygon.isNotEmpty
+                  ? () => _jumpToProject(selectedProjectPolygon)
+                  : null,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  LatLng _polygonCenter(List<LatLng> polygon) {
+    final lat =
+        polygon.fold(0.0, (sum, point) => sum + point.latitude) /
+        polygon.length;
+    final lng =
+        polygon.fold(0.0, (sum, point) => sum + point.longitude) /
+        polygon.length;
+    return LatLng(lat, lng);
+  }
+
+  ForestProjectModel _projectWithBoundary(
+    ForestProjectModel selected,
+    List<ForestProjectModel> allProjects,
+  ) {
+    final sameId = allProjects.where((project) => project.id == selected.id);
+    if (sameId.isNotEmpty) return sameId.first;
+
+    if (selected.polygon.length >= 3) return selected;
+
+    final sameName = allProjects.where(
+      (project) =>
+          project.projectName.trim().toLowerCase() ==
+              selected.projectName.trim().toLowerCase() &&
+          project.polygon.length >= 3,
+    );
+    if (sameName.isNotEmpty) return sameName.first;
+
+    return selected;
+  }
+}
+
+class _GpsMapSidebar extends StatelessWidget {
+  final bool isSharing;
+  final bool isSatellite;
+  final Position? position;
+  final VoidCallback onToggle;
+  final VoidCallback onRefresh;
+  final VoidCallback onToggleSatellite;
+  final VoidCallback? onJumpToProject;
+
+  const _GpsMapSidebar({
+    required this.isSharing,
+    required this.isSatellite,
+    required this.position,
+    required this.onToggle,
+    required this.onRefresh,
+    required this.onToggleSatellite,
+    this.onJumpToProject,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.surface.withValues(alpha: 0.96),
+      borderRadius: BorderRadius.circular(24),
+      elevation: 2,
+      child: Container(
+        width: 72,
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.sm,
+          vertical: AppSpacing.md,
+        ),
+        child: Column(
+          children: [
+            Icon(
+              isSharing ? Icons.gps_fixed : Icons.gps_not_fixed,
+              color: isSharing ? AppColors.tertiary : AppColors.secondary,
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              isSharing ? 'ON' : 'OFF',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: isSharing ? AppColors.tertiary : AppColors.secondary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            _CompactCoordinate(position: position),
+            const Spacer(),
+            Tooltip(
+              message: isSatellite ? 'Bản đồ thường' : 'Vệ tinh',
+              child: IconButton.outlined(
+                onPressed: onToggleSatellite,
+                icon: Icon(isSatellite ? Icons.map : Icons.satellite_alt),
+                color: AppColors.info,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            if (onJumpToProject != null) ...[
+              Tooltip(
+                message: 'Đến vị trí dự án',
+                child: IconButton.outlined(
+                  onPressed: onJumpToProject,
+                  icon: const Icon(Icons.forest_outlined),
+                  color: AppColors.primary,
+                ),
+              ),
+              const SizedBox(height: AppSpacing.xs),
+            ],
+            Tooltip(
+              message: 'Cập nhật vị trí',
+              child: IconButton.outlined(
+                onPressed: onRefresh,
+                icon: const Icon(Icons.refresh),
+                color: AppColors.tertiary,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            Tooltip(
+              message: isSharing ? 'Tắt GPS' : 'Bật GPS',
+              child: IconButton.filled(
+                onPressed: onToggle,
+                icon: Icon(isSharing ? Icons.stop : Icons.play_arrow),
+                color: AppColors.onPrimary,
+                style: IconButton.styleFrom(
+                  backgroundColor: AppColors.tertiary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactCoordinate extends StatelessWidget {
+  final Position? position;
+
+  const _CompactCoordinate({required this.position});
+
+  @override
+  Widget build(BuildContext context) {
+    if (position == null) {
+      return Column(
+        children: [
+          const Icon(
+            Icons.location_off_outlined,
+            size: 18,
+            color: AppColors.secondary,
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            '--',
+            style: Theme.of(context).textTheme.labelSmall,
+            textAlign: TextAlign.center,
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      children: [
+        const Icon(
+          Icons.location_on_outlined,
+          size: 18,
+          color: AppColors.primary,
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          position!.latitude.toStringAsFixed(3),
+          style: Theme.of(context).textTheme.labelSmall,
+          textAlign: TextAlign.center,
+        ),
+        Text(
+          position!.longitude.toStringAsFixed(3),
+          style: Theme.of(context).textTheme.labelSmall,
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          '±${position!.accuracy.toStringAsFixed(0)}m',
+          style: Theme.of(context).textTheme.labelSmall,
+          textAlign: TextAlign.center,
+        ),
+      ],
+    );
+  }
+}
+
+class _MapNotice extends StatelessWidget {
+  final String message;
+
+  const _MapNotice({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.sm,
+        ),
+        decoration: BoxDecoration(
+          color: AppColors.surface.withValues(alpha: 0.96),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: AppColors.secondary.withValues(alpha: 0.45),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.info_outline,
+              size: 18,
+              color: AppColors.secondary,
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Flexible(
+              child: Text(
+                message,
+                style: Theme.of(context).textTheme.bodySmall,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RecentLogsList extends StatelessWidget {
+  final String userId;
+  const _RecentLogsList({required this.userId});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<LogEntryModel>>(
+      stream: FirestoreService.instance.streamWorkerLogEntries(userId),
+      builder: (context, snapshot) {
+        final logs = snapshot.data ?? [];
+        if (logs.isEmpty) {
+          return const AppCard(
+            child: Center(child: Text('Chưa có nhật ký nào.')),
+          );
+        }
+        return AppCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Nhật ký gần đây',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              ...logs
+                  .take(5)
+                  .map(
+                    (log) => ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(log.workType.label),
+                      subtitle: Text(
+                        '${_formatDate(log.date)} • ${log.photoUrls.length} ảnh',
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                    ),
+                  ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _RecentCarbonList extends StatelessWidget {
+  final String projectId;
+  const _RecentCarbonList({required this.projectId});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<CarbonResultModel>>(
+      stream: FirestoreService.instance.streamCarbonResultsForProject(
+        projectId,
+      ),
+      builder: (context, snapshot) {
+        final results = snapshot.data ?? [];
+        if (results.isEmpty) {
+          return const AppCard(
+            child: Center(child: Text('Chưa có kết quả carbon.')),
+          );
+        }
+        return AppCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Kết quả gần đây',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              ...results
+                  .take(5)
+                  .map(
+                    (result) => ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('${result.co2eTon.toStringAsFixed(3)} tCO₂e'),
+                      subtitle: Text(
+                        '${result.totalBiomassKg.toStringAsFixed(1)} kg sinh khối • ${_formatDate(result.calculatedAt)}',
+                      ),
+                    ),
+                  ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _PhotoPickerSummary extends StatelessWidget {
+  final List<XFile> photos;
+  final VoidCallback onCamera;
+  final VoidCallback onGallery;
+  final ValueChanged<int> onRemove;
+
+  const _PhotoPickerSummary({
+    required this.photos,
+    required this.onCamera,
+    required this.onGallery,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Ảnh hiện trường (${photos.length}/10)',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            IconButton.outlined(
+              tooltip: 'Chụp ảnh',
+              onPressed: photos.length >= 10 ? null : onCamera,
+              icon: const Icon(Icons.photo_camera_outlined),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            IconButton.outlined(
+              tooltip: 'Chọn ảnh từ máy',
+              onPressed: photos.length >= 10 ? null : onGallery,
+              icon: const Icon(Icons.add_photo_alternate_outlined),
+            ),
+          ],
+        ),
+        if (photos.isNotEmpty)
+          SizedBox(
+            height: 92,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: photos.length,
+              separatorBuilder: (_, _) => const SizedBox(width: AppSpacing.sm),
+              itemBuilder: (context, index) {
+                return Stack(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: Image.file(
+                        File(photos[index].path),
+                        width: 92,
+                        height: 92,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: IconButton.filled(
+                        visualDensity: VisualDensity.compact,
+                        iconSize: 16,
+                        onPressed: () => onRemove(index),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+
+
+
+class _CarbonPreview extends StatelessWidget {
+  final CarbonBreakdownItem item;
+  const _CarbonPreview({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: AppColors.neutral,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        children: [
+          _MetricRow(
+            label: 'Biomass / cây',
+            value:
+                '${(item.biomassKg / (item.quantity > 0 ? item.quantity : 1)).toStringAsFixed(2)} kg',
+          ),
+          _MetricRow(
+            label: 'Total Biomass',
+            value: '${item.biomassKg.toStringAsFixed(2)} kg',
+          ),
+          _MetricRow(
+            label: 'Carbon Stock (tấn Carbon)',
+            value: '${item.carbonTon.toStringAsFixed(2)} tC',
+          ),
+          _MetricRow(
+            label: 'CO₂ Equivalent (tấn CO₂e)',
+            value: '${item.co2eTon.toStringAsFixed(2)} tCO₂e',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MetricRow extends StatelessWidget {
+  final String label;
+  final String value;
+  const _MetricRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+      child: Row(
+        children: [
+          Expanded(child: Text(label)),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyWorkerState extends StatelessWidget {
+  final VoidCallback onRefresh;
+  const _EmptyWorkerState({required this.onRefresh});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.lg),
+        child: AppCard(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.assignment_late_outlined,
+                size: 48,
+                color: AppColors.secondary,
+              ),
+              const SizedBox(height: AppSpacing.md),
+              Text(
+                'Chưa có dự án được phân công',
+                style: Theme.of(context).textTheme.titleLarge,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                'Admin hoặc chủ rừng cần liên kết tài khoản worker với chủ rừng/dự án trước khi ghi nhận dữ liệu.',
+                style: Theme.of(context).textTheme.bodyMedium,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: AppSpacing.md),
+              OutlinedButton.icon(
+                onPressed: onRefresh,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Tải lại'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String? _positiveNumberValidator(String? value) {
+  final number = double.tryParse(value?.trim() ?? '');
+  if (number == null || number <= 0) return AppStrings.invalidNumber;
+  return null;
+}
+
+String _formatDate(DateTime date) {
+  final day = date.day.toString().padLeft(2, '0');
+  final month = date.month.toString().padLeft(2, '0');
+  return '$day/$month/${date.year}';
+}
+
+String _buildFieldLogFileName({
+  required String projectName,
+  required DateTime date,
+  required String logId,
+}) {
+  final day = date.day.toString().padLeft(2, '0');
+  final month = date.month.toString().padLeft(2, '0');
+  final projectSlug = projectName
+      .trim()
+      .replaceAll(RegExp(r'\s+'), '_')
+      .replaceAll(RegExp(r'[^\w\u00C0-\u1EF9]+'), '_');
+  final shortId = logId.length > 6 ? logId.substring(0, 6) : logId;
+  return 'Hien_Truong_${projectSlug}_${day}_${month}_${date.year}_$shortId.pdf';
+}

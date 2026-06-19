@@ -617,6 +617,7 @@ Vai trò của bạn: GIS & Forest Data — bản đồ, quản lý chủ rừng
    - Thông tin: tên, tỉnh/huyện/xã, loại rừng, loài cây, năm trồng
    - Quản lý trạng thái: Draft → Surveying → Active → Suspended
    - Xem polygon của dự án trên bản đồ
+r
 
 === RÀNG BUỘC BẮT BUỘC ===
 - KHÔNG dùng Google Maps API — chỉ dùng flutter_map + OSM (hoàn toàn miễn phí)

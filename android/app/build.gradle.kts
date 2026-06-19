@@ -9,7 +9,7 @@ plugins {
 
 android {
     namespace = "com.forestcarbon.forest_carbon_platform"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

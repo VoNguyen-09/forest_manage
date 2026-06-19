@@ -1,20 +1,25 @@
 import 'package:go_router/go_router.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
+import 'package:forest_carbon_platform/core/models/forest_owner_model.dart';
+import 'package:forest_carbon_platform/core/models/forest_project_model.dart';
 import 'package:forest_carbon_platform/features/auth/screens/login_screen.dart';
 import 'package:forest_carbon_platform/features/dashboard/screens/dashboard_admin_screen.dart';
 import 'package:forest_carbon_platform/features/dashboard/screens/dashboard_owner_screen.dart';
+import 'package:forest_carbon_platform/features/worker/screens/worker_dashboard_screen.dart';
 import 'package:forest_carbon_platform/features/file_manager/screens/file_manager_screen.dart';
 import 'package:forest_carbon_platform/features/notifications/screens/notification_screen.dart';
 import 'package:forest_carbon_platform/features/accounts/screens/account_management_screen.dart';
-import 'package:forest_carbon_platform/features/auth/screens/forgot_password_screen.dart';
-import 'package:forest_carbon_platform/features/auth/screens/change_password_screen.dart';
+import 'package:forest_carbon_platform/features/auth/screens/otp_login_screen.dart';
 import 'package:forest_carbon_platform/features/carbon/screens/carbon_calculation_screen.dart';
 import 'package:forest_carbon_platform/features/carbon/screens/species_factor_screen.dart';
 import 'package:forest_carbon_platform/features/reports/screens/reports_screen.dart';
 import 'package:forest_carbon_platform/features/forest_owners/screens/forest_owners_screen.dart';
 import 'package:forest_carbon_platform/features/forest_owners/screens/forest_owner_form_screen.dart';
+import 'package:forest_carbon_platform/features/forest_workers/screens/forest_workers_screen.dart';
+import 'package:forest_carbon_platform/features/accounts/screens/admin_forest_workers_screen.dart';
 import 'package:forest_carbon_platform/features/forest_projects/screens/forest_projects_screen.dart';
 import 'package:forest_carbon_platform/features/forest_projects/screens/forest_project_form_screen.dart';
+import 'package:forest_carbon_platform/features/forest_projects/screens/assign_workers_screen.dart';
 import 'package:forest_carbon_platform/features/map/screens/map_screen.dart';
 
 final GoRouter appRouter = GoRouter(
@@ -27,15 +32,9 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const LoginScreen(),
     ),
     GoRoute(
-      path: AppRoutes.forgotPassword,
-      name: 'forgotPassword',
-      builder: (context, state) => const ForgotPasswordScreen(),
-    ),
-    // Route đổi mật khẩu, trong thực tế có thể cần đặt trong một ShellRoute hoặc nested route sau khi login
-    GoRoute(
-      path: '/change-password',
-      name: 'changePassword',
-      builder: (context, state) => const ChangePasswordScreen(),
+      path: AppRoutes.otpLogin,
+      name: 'otpLogin',
+      builder: (context, state) => const OtpLoginScreen(),
     ),
 
     // ── Dashboard ──────────────────────────────────
@@ -49,7 +48,12 @@ final GoRouter appRouter = GoRouter(
       name: 'dashboardOwner',
       builder: (context, state) => const DashboardOwnerScreen(),
     ),
-    
+    GoRoute(
+      path: AppRoutes.dashboardWorker,
+      name: 'dashboardWorker',
+      builder: (context, state) => const WorkerDashboardScreen(),
+    ),
+
     // ── File Manager ────────────────────────────────
     GoRoute(
       path: AppRoutes.fileManager,
@@ -101,7 +105,22 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: AppRoutes.forestOwnerAdd,
       name: 'forestOwnerAdd',
-      builder: (context, state) => const ForestOwnerFormScreen(),
+      builder: (context, state) {
+        final owner = state.extra as ForestOwnerModel?;
+        return ForestOwnerFormScreen(owner: owner);
+      },
+    ),
+
+    // ── Forest Workers ─────────────────────────────
+    GoRoute(
+      path: AppRoutes.forestWorkers,
+      name: 'forestWorkers',
+      builder: (context, state) => const ForestWorkersScreen(),
+    ),
+    GoRoute(
+      path: AppRoutes.adminForestWorkers,
+      name: 'adminForestWorkers',
+      builder: (context, state) => const AdminForestWorkersScreen(),
     ),
 
     // ── Forest Projects ─────────────────────────────
@@ -113,14 +132,34 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: AppRoutes.forestProjectAdd,
       name: 'forestProjectAdd',
-      builder: (context, state) => const ForestProjectFormScreen(),
+      builder: (context, state) {
+        final project = state.extra as ForestProjectModel?;
+        return ForestProjectFormScreen(project: project);
+      },
+    ),
+    GoRoute(
+      path: AppRoutes.assignWorkers,
+      name: 'assignWorkers',
+      builder: (context, state) {
+        final project = state.extra as ForestProjectModel;
+        return AssignWorkersScreen(project: project);
+      },
     ),
 
     // ── Map ─────────────────────────────────────────
     GoRoute(
       path: AppRoutes.map,
       name: 'map',
-      builder: (context, state) => const MapScreen(),
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        final isSelectingForForm =
+            extra?['isSelectingForForm'] as bool? ?? false;
+        final initialPolygon = extra?['initialPolygon'];
+        return MapScreen(
+          isSelectingForForm: isSelectingForForm,
+          initialPolygon: initialPolygon,
+        );
+      },
     ),
   ],
 

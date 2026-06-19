@@ -41,6 +41,7 @@ class AppKpiCard extends StatelessWidget {
   final String? unit;
   final IconData icon;
   final Color? iconColor;
+  final VoidCallback? onTap;
 
   const AppKpiCard({
     super.key,
@@ -49,47 +50,56 @@ class AppKpiCard extends StatelessWidget {
     this.unit,
     required this.icon,
     this.iconColor,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final color = iconColor ?? AppColors.tertiary;
-    return AppCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(icon, color: color, size: 20),
+    final child = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
               ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            value,
-            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  color: AppColors.primary,
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
-          if (unit != null)
-            Text(
-              unit!,
-              style: Theme.of(context).textTheme.labelSmall,
+              child: Icon(icon, color: color, size: 20),
             ),
-          const SizedBox(height: 4),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Text(
+          value,
+          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                color: AppColors.primary,
+                fontWeight: FontWeight.w700,
+              ),
+        ),
+        if (unit != null)
           Text(
-            label,
-            style: Theme.of(context).textTheme.bodySmall,
+            unit!,
+            style: Theme.of(context).textTheme.labelSmall,
           ),
-        ],
-      ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
     );
+
+    if (onTap != null) {
+      return InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        child: AppCard(child: child),
+      );
+    }
+
+    return AppCard(child: child);
   }
 }

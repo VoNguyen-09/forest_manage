@@ -1,13 +1,19 @@
 import 'package:flutter/material.dart';
+import 'dart:typed_data';
+import 'package:uuid/uuid.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
 import 'package:forest_carbon_platform/config/theme.dart';
 import 'package:forest_carbon_platform/core/models/forest_owner_model.dart';
 import 'package:forest_carbon_platform/core/models/forest_project_model.dart';
+import 'package:forest_carbon_platform/core/models/file_document_model.dart';
+import 'package:forest_carbon_platform/core/services/auth_service.dart';
 import 'package:forest_carbon_platform/core/services/firestore_service.dart';
+import 'package:forest_carbon_platform/core/services/cloudinary_service.dart';
 import 'package:forest_carbon_platform/features/reports/services/pdf_report_service.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_card.dart';
 import 'package:forest_carbon_platform/shared/widgets/loading_overlay.dart';
 import 'package:intl/intl.dart';
+import 'package:printing/printing.dart';
 
 /// Reports Screen — TV4
 /// Cho phép chọn loại báo cáo, chọn dự án/date range rồi xuất PDF.
@@ -21,6 +27,8 @@ class ReportsScreen extends StatefulWidget {
 class _ReportsScreenState extends State<ReportsScreen> {
   final _db = FirestoreService.instance;
   final _pdfSvc = PdfReportService.instance;
+  final _auth = AuthService.instance;
+  final _cloudinary = CloudinaryService.instance;
 
   List<ForestProjectModel> _projects = [];
   ForestProjectModel? _selectedProject;
@@ -32,6 +40,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
   bool _exporting = false;
 
   int _selectedReport = 0; // 0=Summary, 1=Inventory, 2=Activity
+  
+  String _ownerId = '';
 
   static const _reportTypes = [
     _ReportType(
@@ -54,13 +64,21 @@ class _ReportsScreenState extends State<ReportsScreen> {
   @override
   void initState() {
     super.initState();
-    _loadProjects();
+    _initOwnerId();
+  }
+
+  Future<void> _initOwnerId() async {
+    final userModel = _auth.currentUserModel ?? await _auth.getCurrentUserModel();
+    if (userModel != null) {
+      setState(() => _ownerId = userModel.ownerId);
+      _loadProjects();
+    }
   }
 
   Future<void> _loadProjects() async {
     setState(() => _loading = true);
     try {
-      final projects = await _db.listForestProjects();
+      final projects = await _db.streamForestProjects(ownerId: _ownerId).first;
       setState(() {
         _projects = projects;
         _loading = false;
@@ -99,11 +117,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
     setState(() => _exporting = true);
     try {
+      Uint8List? pdfBytes;
+      String reportName = '';
+
       switch (_selectedReport) {
         case 0:
+          reportName = 'Báo cáo Tổng hợp - ${project.projectName}';
           final owner = await _db.getForestOwner(project.ownerId);
           final carbon = await _db.getLatestCarbonResult(project.id);
-          await _pdfSvc.printForestSummary(
+          pdfBytes = await _pdfSvc.buildForestSummaryBytes(
             project: project,
             owner: owner ?? ForestOwnerModel(
               id: project.ownerId,
@@ -120,22 +142,29 @@ class _ReportsScreenState extends State<ReportsScreen> {
           );
           break;
         case 1:
+          reportName = 'Báo cáo Điều tra rừng - ${project.projectName}';
           final plots = await _db.listPlots(projectId: project.id);
-          await _pdfSvc.printInventoryReport(project: project, plots: plots);
+          pdfBytes = await _pdfSvc.buildInventoryBytes(project: project, plots: plots);
           break;
         case 2:
+          reportName = 'Báo cáo Nhật ký Hoạt động - ${project.projectName}';
           final entries = await _db.listLogEntries(
             projectId: project.id,
             from: _from,
             to: _to,
           );
-          await _pdfSvc.printActivityReport(
+          pdfBytes = await _pdfSvc.buildActivityBytes(
             project: project,
             entries: entries,
             from: _from,
             to: _to,
           );
           break;
+      }
+
+      if (pdfBytes != null) {
+        // Save to file manager
+        await _savePdfToFileManager(pdfBytes, reportName, project.id);
       }
     } catch (e) {
       if (mounted) {
@@ -148,6 +177,81 @@ class _ReportsScreenState extends State<ReportsScreen> {
       }
     } finally {
       setState(() => _exporting = false);
+    }
+  }
+
+  Future<void> _savePdfToFileManager(
+    Uint8List pdfBytes,
+    String reportName,
+    String projectId,
+  ) async {
+    try {
+      // Upload PDF to Cloudinary
+      final uploadResult = await _cloudinary.uploadBytes(
+        pdfBytes,
+        identifier: reportName,
+        folder: 'Báo cáo khảo sát',
+        extension: '.pdf',
+      );
+
+      if (uploadResult.isEmpty) {
+        throw Exception('Upload thất bại');
+      }
+
+      // Create FileDocumentModel
+      final fileDoc = FileDocumentModel(
+        id: const Uuid().v4(),
+        name: '$reportName.pdf',
+        category: 'Báo cáo khảo sát',
+        type: 'application/pdf',
+        url: uploadResult,
+        ownerId: _ownerId,
+        projectId: projectId,
+        uploadedBy: _auth.currentUser?.uid ?? '',
+        uploadedByName: _auth.currentUserModel?.fullName ?? '',
+        status: 'pending', // Pending admin approval
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      // Save to Firestore
+      await _db.saveFileDocument(fileDoc);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Báo cáo đã được lưu vào Quản lý tài liệu'),
+            backgroundColor: AppColors.tertiary,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Lỗi lưu báo cáo: ${e.toString()}'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _showPdfPreview(Uint8List pdfBytes, String fileName) async {
+    try {
+      await Printing.layoutPdf(
+        name: fileName,
+        onLayout: (_) async => pdfBytes,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Không thể mở PDF: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
     }
   }
 
@@ -255,7 +359,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
           Text('Dự án', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: AppSpacing.md),
           DropdownButtonFormField<ForestProjectModel>(
-            value: _selectedProject,
+            initialValue: _selectedProject,
             decoration: const InputDecoration(labelText: 'Chọn dự án'),
             items: _projects
                 .map((p) => DropdownMenuItem(

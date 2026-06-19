@@ -1,5 +1,4 @@
-import 'package:forest_carbon_platform/core/models/forest_project_model.dart'
-    show GpsPoint;
+import 'package:forest_carbon_platform/core/models/gps_point.dart';
 
 class TreeData {
   final String species;

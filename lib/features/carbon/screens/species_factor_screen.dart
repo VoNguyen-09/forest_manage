@@ -190,8 +190,14 @@ class _SpeciesFactorTile extends StatelessWidget {
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 Text(
-                  'Hệ số: ${factor.factor}  ·  Cập nhật: ${fmt.format(factor.updatedAt)}',
+                  'Hệ số: ${factor.factor.toStringAsFixed(3)}  ·  Số cây: ${NumberFormat('#,###').format(factor.totalTreesCount)}',
                   style: Theme.of(context).textTheme.bodySmall,
+                ),
+                Text(
+                  'Cập nhật: ${fmt.format(factor.updatedAt)}',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppColors.secondary,
+                  ),
                 ),
               ],
             ),
@@ -243,6 +249,7 @@ class _SpeciesFactorDialogState extends State<_SpeciesFactorDialog> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameCtrl;
   late final TextEditingController _factorCtrl;
+  late final TextEditingController _treeCountCtrl;
 
   @override
   void initState() {
@@ -250,22 +257,27 @@ class _SpeciesFactorDialogState extends State<_SpeciesFactorDialog> {
     _nameCtrl = TextEditingController(text: widget.existing?.speciesName ?? '');
     _factorCtrl = TextEditingController(
         text: widget.existing?.factor.toString() ?? '');
+    _treeCountCtrl = TextEditingController(
+        text: widget.existing?.totalTreesCount.toString() ?? '0');
   }
 
   @override
   void dispose() {
     _nameCtrl.dispose();
     _factorCtrl.dispose();
+    _treeCountCtrl.dispose();
     super.dispose();
   }
 
   void _submit() {
     if (!_formKey.currentState!.validate()) return;
     final factor = double.parse(_factorCtrl.text.trim());
+    final treeCount = int.parse(_treeCountCtrl.text.trim());
     final sf = SpeciesFactor(
       speciesId: widget.existing?.speciesId ?? const Uuid().v4(),
       speciesName: _nameCtrl.text.trim(),
       factor: factor,
+      totalTreesCount: treeCount,
       updatedBy: 'admin',
       updatedAt: DateTime.now(),
     );
@@ -300,6 +312,21 @@ class _SpeciesFactorDialogState extends State<_SpeciesFactorDialog> {
                 if (v == null || v.isEmpty) return AppStrings.fieldRequired;
                 final n = double.tryParse(v.trim());
                 if (n == null || n <= 0) return AppStrings.invalidNumber;
+                return null;
+              },
+            ),
+            const SizedBox(height: AppSpacing.md),
+            TextFormField(
+              controller: _treeCountCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Số lượng cây',
+                hintText: 'Ví dụ: 5000',
+              ),
+              keyboardType: TextInputType.number,
+              validator: (v) {
+                if (v == null || v.isEmpty) return AppStrings.fieldRequired;
+                final n = int.tryParse(v.trim());
+                if (n == null || n < 0) return AppStrings.invalidNumber;
                 return null;
               },
             ),

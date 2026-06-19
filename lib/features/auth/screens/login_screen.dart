@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:forest_carbon_platform/config/theme.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
+import 'package:forest_carbon_platform/core/models/user_model.dart';
+import 'package:forest_carbon_platform/core/services/auth_service.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_button.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -28,17 +30,80 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _onLogin() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isLoading = true);
-    // TODO: gọi AuthService.signIn()
-    await Future.delayed(const Duration(seconds: 1));
-    
-    if (!mounted) return;
-    setState(() => _isLoading = false);
-    
-    // Tạm thời điều hướng thẳng vào Dashboard Admin để xem UI
-    if (_emailController.text.contains('admin')) {
-      context.go(AppRoutes.dashboardAdmin);
-    } else {
-      context.go(AppRoutes.dashboardOwner);
+
+    try {
+      await AuthService.instance.signIn(
+        email: _emailController.text,
+        password: _passwordController.text,
+      );
+
+      final user = await AuthService.instance.getCurrentUserModel(
+        throwOnError: true,
+      );
+      if (!mounted) return;
+
+      if (user == null) {
+        final currentAuthUser = AuthService.instance.currentUser;
+        final uid = currentAuthUser?.uid ?? 'unknown';
+        
+        // Auto-heal: Nếu tài khoản Auth tồn tại nhưng không có trong Firestore (do lỗi ngắt quãng trước đây), 
+        // xoá luôn tài khoản Auth đó để Chủ rừng có thể tạo lại một cách liền mạch.
+        if (currentAuthUser != null) {
+          try {
+            await currentAuthUser.delete();
+          } catch (_) {
+            // Ignore error if delete fails
+          }
+        }
+        
+        await AuthService.instance.signOut();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Tài khoản bị lỗi đồng bộ (ID: $uid) đã được dọn dẹp. Vui lòng nhờ Chủ rừng tạo lại.',
+            ),
+            backgroundColor: AppColors.error,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+        return;
+      }
+
+      if (user.status == UserStatus.locked ||
+          user.status == UserStatus.inactive) {
+        await AuthService.instance.signOut();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Tài khoản đã bị khóa hoặc chưa hoạt động.'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+        return;
+      }
+
+      switch (user.role) {
+        case UserRole.platformAdmin:
+          context.go(AppRoutes.dashboardAdmin);
+          break;
+        case UserRole.forestOwner:
+          context.go(AppRoutes.dashboardOwner);
+          break;
+        case UserRole.forestWorker:
+          context.go(AppRoutes.dashboardWorker);
+          break;
+      }
+    } catch (e) {
+      if (!mounted) return;
+      final message = e.toString().split('\n').first;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Không đăng nhập được: $message'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -144,7 +209,8 @@ class _LoginScreenState extends State<LoginScreen> {
                                     : Icons.visibility_off_outlined,
                               ),
                               onPressed: () => setState(
-                                  () => _obscurePassword = !_obscurePassword),
+                                () => _obscurePassword = !_obscurePassword,
+                              ),
                             ),
                           ),
                           validator: (v) {
@@ -162,7 +228,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           alignment: Alignment.centerRight,
                           child: TextButton(
                             onPressed: () {
-                              context.push(AppRoutes.forgotPassword);
+                              context.push(AppRoutes.otpLogin);
                             },
                             child: Text(
                               AppStrings.forgotPassword,

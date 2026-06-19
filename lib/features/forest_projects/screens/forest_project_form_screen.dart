@@ -3,13 +3,16 @@ import 'package:go_router/go_router.dart';
 import 'package:forest_carbon_platform/config/constants.dart';
 import 'package:forest_carbon_platform/config/theme.dart';
 import 'package:forest_carbon_platform/core/models/forest_project_model.dart';
+import 'package:forest_carbon_platform/core/models/carbon_result_model.dart';
 import 'package:uuid/uuid.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_card.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_button.dart';
 import 'package:forest_carbon_platform/shared/widgets/loading_overlay.dart';
 import 'package:forest_carbon_platform/core/services/forest_project_service.dart';
 import 'package:forest_carbon_platform/core/services/forest_owner_service.dart';
+import 'package:forest_carbon_platform/core/services/firestore_service.dart';
 import 'package:forest_carbon_platform/core/models/forest_owner_model.dart';
+import 'package:forest_carbon_platform/core/models/gps_point.dart';
 
 class ForestProjectFormScreen extends StatefulWidget {
   final ForestProjectModel? project;
@@ -25,7 +28,6 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
   
   late TextEditingController _nameController;
   late TextEditingController _forestTypeController;
-  late TextEditingController _treeSpeciesController;
   late TextEditingController _yearController;
   late TextEditingController _provinceController;
   late TextEditingController _districtController;
@@ -33,20 +35,29 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
   ProjectStatus _selectedStatus = ProjectStatus.draft;
   bool _isLoading = false;
   String? _selectedOwnerId;
+  String? _selectedTreeSpecies;
+  SpeciesFactor? _selectedSpeciesFactor;
+
+  List<GpsPoint> _currentPolygon = [];
+  double _currentArea = 0.0;
+  double _currentPerimeter = 0.0;
 
   @override
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.project?.projectName ?? '');
     _forestTypeController = TextEditingController(text: widget.project?.forestType ?? '');
-    _treeSpeciesController = TextEditingController(text: widget.project?.treeSpecies ?? '');
     _yearController = TextEditingController(text: widget.project?.yearPlanted.toString() ?? DateTime.now().year.toString());
     _provinceController = TextEditingController(text: widget.project?.province ?? '');
     _districtController = TextEditingController(text: widget.project?.district ?? '');
     _communeController = TextEditingController(text: widget.project?.commune ?? '');
+    _selectedTreeSpecies = widget.project?.treeSpecies;
     if (widget.project != null) {
       _selectedStatus = widget.project!.status;
       _selectedOwnerId = widget.project!.ownerId;
+      _currentPolygon = List.from(widget.project!.polygon);
+      _currentArea = widget.project!.totalAreaHa;
+      _currentPerimeter = widget.project!.perimeter;
     }
   }
 
@@ -54,7 +65,6 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
   void dispose() {
     _nameController.dispose();
     _forestTypeController.dispose();
-    _treeSpeciesController.dispose();
     _yearController.dispose();
     _provinceController.dispose();
     _districtController.dispose();
@@ -62,10 +72,70 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
     super.dispose();
   }
 
+  Future<void> _openMapForBoundary() async {
+    final result = await context.push(
+      AppRoutes.map,
+      extra: {
+        'isSelectingForForm': true,
+        'initialPolygon': _currentPolygon,
+      },
+    );
+
+    if (result != null && result is Map<String, dynamic>) {
+      setState(() {
+        _currentPolygon = result['polygon'] as List<GpsPoint>;
+        _currentArea = result['area'] as double;
+        _currentPerimeter = result['perimeter'] as double;
+      });
+    }
+  }
+
+  Future<void> _updateForestOwnerTotalTrees(String ownerId) async {
+    try {
+      final fs = FirestoreService.instance;
+      
+      // Get all projects for this owner
+      final projects = await fs.listForestProjects(ownerId: ownerId);
+      
+      // Get all species factors
+      final speciesFactors = await fs.listSpeciesFactors();
+      
+      // Calculate total trees by summing totalTreesCount from each project's species factor
+      int totalTrees = 0;
+      for (final project in projects) {
+        final speciesFactor = speciesFactors.firstWhere(
+          (sf) => sf.speciesName.toLowerCase() == project.treeSpecies.toLowerCase(),
+          orElse: () => SpeciesFactor(
+            speciesId: '', 
+            speciesName: '', 
+            factor: 0, 
+            updatedBy: '', 
+            updatedAt: DateTime.now(),
+          ),
+        );
+        totalTrees += speciesFactor.totalTreesCount;
+      }
+      
+      // Get the forest owner and update totalTrees
+      final owner = await fs.getForestOwner(ownerId);
+      if (owner != null) {
+        final updatedOwner = owner.copyWith(totalTrees: totalTrees);
+        await fs.saveForestOwner(updatedOwner);
+      }
+    } catch (e) {
+      // Log error but don't fail the save operation
+      print('Error updating forest owner total trees: $e');
+    }
+  }
+
   Future<void> _saveForm() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedOwnerId == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Vui lòng chọn chủ rừng', style: TextStyle(color: Colors.white)), backgroundColor: AppColors.error));
+      return;
+    }
+    if (_selectedTreeSpecies == null || _selectedTreeSpecies!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Vui lòng chọn loài cây', style: TextStyle(color: Colors.white)), backgroundColor: AppColors.error));
       return;
     }
 
@@ -80,12 +150,12 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
         district: _districtController.text.trim(),
         commune: _communeController.text.trim(),
         forestType: _forestTypeController.text.trim(),
-        treeSpecies: _treeSpeciesController.text.trim(),
+        treeSpecies: _selectedTreeSpecies!,
         yearPlanted: int.tryParse(_yearController.text.trim()) ?? DateTime.now().year,
         status: _selectedStatus,
-        polygon: widget.project?.polygon ?? [],
-        totalAreaHa: widget.project?.totalAreaHa ?? 0.0,
-        perimeter: widget.project?.perimeter ?? 0.0,
+        polygon: _currentPolygon,
+        totalAreaHa: _currentArea,
+        perimeter: _currentPerimeter,
         createdAt: widget.project?.createdAt ?? DateTime.now(),
         updatedAt: DateTime.now(),
       );
@@ -95,6 +165,9 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
       } else {
         await ForestProjectService.instance.updateProject(project);
       }
+
+      // Update forest owner's totalTrees
+      await _updateForestOwnerTotalTrees(_selectedOwnerId!);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lưu dự án thành công!')));
@@ -159,10 +232,19 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
                             }
                             
                             return DropdownButtonFormField<String>(
-                              value: _selectedOwnerId,
+                              initialValue: _selectedOwnerId,
                               decoration: const InputDecoration(labelText: 'Chủ rừng', border: OutlineInputBorder()),
                               items: owners.map((o) => DropdownMenuItem(value: o.id, child: Text('${o.ownerCode} - ${o.ownerName}'))).toList(),
-                              onChanged: (val) => setState(() => _selectedOwnerId = val),
+                              onChanged: (val) {
+                                final selectedOwner = owners.where((o) => o.id == val).firstOrNull;
+                                setState(() {
+                                  _selectedOwnerId = val;
+                                  final forestName = selectedOwner?.forestName.trim() ?? '';
+                                  if (forestName.isNotEmpty) {
+                                    _forestTypeController.text = forestName;
+                                  }
+                                });
+                              },
                               validator: (val) => val == null ? AppStrings.fieldRequired : null,
                             );
                           }
@@ -173,7 +255,7 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
                           children: [
                             Expanded(
                               child: DropdownButtonFormField<ProjectStatus>(
-                                value: _selectedStatus,
+                                initialValue: _selectedStatus,
                                 decoration: const InputDecoration(labelText: 'Trạng thái', border: OutlineInputBorder()),
                                 items: ProjectStatus.values.map((status) {
                                   String label = '';
@@ -214,10 +296,59 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
                             ),
                             const SizedBox(width: AppSpacing.md),
                             Expanded(
-                              child: TextFormField(
-                                controller: _treeSpeciesController,
-                                decoration: const InputDecoration(labelText: AppStrings.treeSpecies, border: OutlineInputBorder()),
-                                validator: (val) => val == null || val.isEmpty ? AppStrings.fieldRequired : null,
+                              child: StreamBuilder<List<SpeciesFactor>>(
+                                stream: FirestoreService.instance.streamSpeciesFactors(),
+                                builder: (context, snapshot) {
+                                  if (snapshot.connectionState == ConnectionState.waiting) {
+                                    return const Center(child: CircularProgressIndicator());
+                                  }
+                                  
+                                  final speciesFactors = snapshot.data ?? [];
+                                  if (speciesFactors.isEmpty) {
+                                    return const TextField(
+                                      enabled: false,
+                                      decoration: InputDecoration(
+                                        labelText: 'Loài cây (không có dữ liệu)',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                    );
+                                  }
+                                  
+                                  // Ensure selected species exists in the list
+                                  if (_selectedTreeSpecies != null && 
+                                      !speciesFactors.any((sf) => sf.speciesName == _selectedTreeSpecies)) {
+                                    _selectedTreeSpecies = null;
+                                  }
+                                  
+                                  return DropdownButtonFormField<String>(
+                                    value: _selectedTreeSpecies,
+                                    decoration: const InputDecoration(
+                                      labelText: AppStrings.treeSpecies,
+                                      border: OutlineInputBorder(),
+                                    ),
+                                    items: speciesFactors.map((sf) => DropdownMenuItem(
+                                      value: sf.speciesName,
+                                      child: Text(sf.speciesName),
+                                    )).toList(),
+                                    onChanged: (val) {
+                                      final selectedFactor = speciesFactors.firstWhere(
+                                        (sf) => sf.speciesName == val,
+                                        orElse: () => SpeciesFactor(
+                                          speciesId: '',
+                                          speciesName: '',
+                                          factor: 0,
+                                          updatedBy: '',
+                                          updatedAt: DateTime.now(),
+                                        ),
+                                      );
+                                      setState(() {
+                                        _selectedTreeSpecies = val;
+                                        _selectedSpeciesFactor = selectedFactor;
+                                      });
+                                    },
+                                    validator: (val) => val == null || val.isEmpty ? AppStrings.fieldRequired : null,
+                                  );
+                                },
                               ),
                             ),
                           ],
@@ -232,7 +363,44 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Địa điểm & Ranh giới', style: Theme.of(context).textTheme.titleLarge),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('Địa điểm & Ranh giới', style: Theme.of(context).textTheme.titleLarge),
+                            ElevatedButton.icon(
+                              onPressed: _openMapForBoundary,
+                              icon: const Icon(Icons.map_outlined, size: 18),
+                              label: const Text('Vẽ bản đồ'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.tertiary,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (_currentPolygon.isNotEmpty) ...[
+                          const SizedBox(height: AppSpacing.sm),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: AppColors.primary.withValues(alpha: 0.2)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.check_circle, color: AppColors.primary),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Đã vẽ ranh giới (${_currentPolygon.length} điểm)\nDiện tích: ${_currentArea.toStringAsFixed(2)} ha',
+                                    style: const TextStyle(fontWeight: FontWeight.w600, color: AppColors.primary),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: AppSpacing.md),
                         
                         Row(
@@ -258,40 +426,6 @@ class _ForestProjectFormScreenState extends State<ForestProjectFormScreen> {
                               ),
                             ),
                           ],
-                        ),
-                        const SizedBox(height: AppSpacing.lg),
-
-                        Container(
-                          padding: const EdgeInsets.all(AppSpacing.md),
-                          decoration: BoxDecoration(
-                            color: AppColors.neutral,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: AppColors.secondary.withValues(alpha: 0.5)),
-                          ),
-                          child: Column(
-                            children: [
-                              const Icon(Icons.map, size: 48, color: AppColors.secondary),
-                              const SizedBox(height: AppSpacing.sm),
-                              const Text('Chưa có dữ liệu không gian', style: TextStyle(color: AppColors.secondary)),
-                              const SizedBox(height: AppSpacing.md),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  OutlinedButton.icon(
-                                    icon: const Icon(Icons.upload_file),
-                                    label: const Text(AppStrings.uploadShapefile),
-                                    onPressed: () {},
-                                  ),
-                                  const SizedBox(width: AppSpacing.md),
-                                  OutlinedButton.icon(
-                                    icon: const Icon(Icons.draw),
-                                    label: const Text(AppStrings.drawPolygon),
-                                    onPressed: () {},
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
                         ),
                       ],
                     ),

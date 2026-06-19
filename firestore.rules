@@ -21,8 +21,18 @@ service cloud.firestore {
     }
 
     /// Đọc role từ Firestore (so sánh với field 'role' trong users/{uid})
+    function userData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    /// Lấy ownerId từ UserModel, nếu không có thì trả về null
+    function getUserOwnerId() {
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
+      return userDoc.exists ? userDoc.data.ownerId : null;
+    }
+
     function getRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      return userData().role;
     }
 
     function isPlatformAdmin() {
@@ -41,6 +51,10 @@ service cloud.firestore {
       return isPlatformAdmin() || isForestOwner();
     }
 
+    function isCurrentForestOwner(ownerId) {
+      return isForestOwner() && request.auth.uid == ownerId;
+    }
+
     /// Kiểm tra uid của request là chính mình
     function isOwnerOfDoc(uid) {
       return isAuth() && request.auth.uid == uid;
@@ -52,13 +66,18 @@ service cloud.firestore {
     // - Sửa: chính mình (không đổi role/status) hoặc admin
     // - Xóa: admin
     match /users/{userId} {
-      allow read: if isOwnerOfDoc(userId) || isPlatformAdmin();
-      allow create: if isPlatformAdmin();
+      allow read: if isOwnerOfDoc(userId) 
+                  || isPlatformAdmin()
+                  || (isAuth() && resource.data.ownerId == request.auth.uid);
+      allow create: if isPlatformAdmin()
+                    || (isAuth() && request.resource.data.ownerId == request.auth.uid);
       allow update: if isPlatformAdmin()
                     || (isOwnerOfDoc(userId)
                         && !request.resource.data.diff(resource.data).affectedKeys()
-                            .hasAny(['role', 'status']));
-      allow delete: if isPlatformAdmin();
+                            .hasAny(['role', 'status']))
+                    || (isAuth() && resource.data.ownerId == request.auth.uid && request.resource.data.ownerId == request.auth.uid);
+      allow delete: if isPlatformAdmin()
+                    || (isAuth() && resource.data.ownerId == request.auth.uid);
     }
 
     // ── forestOwners ─────────────────────────────────────────────────────────
@@ -71,15 +90,16 @@ service cloud.firestore {
     }
 
     // ── forestProjects ───────────────────────────────────────────────────────
-    // - Đọc: mọi user đã xác thực
-    // - Tạo/Sửa: admin hoặc chủ rừng (chỉ project của mình)
+    // - Đọc: admin, forestOwner, forestWorker (query tự filter ownerId)
+    // - Tạo/Sửa: admin hoặc chủ rừng có ownerId khớp
     // - Xóa: admin
     match /forestProjects/{projectId} {
       allow read: if isAuth();
-      allow create: if isAdminOrOwner();
+      allow create: if isPlatformAdmin()
+                    || (isForestOwner() && request.resource.data.ownerId != null);
       allow update: if isPlatformAdmin()
-                    || (isForestOwner() && resource.data.ownerId == request.auth.uid);
-      allow delete: if isPlatformAdmin();
+                    || (isForestOwner() && resource.data.ownerId == request.resource.data.ownerId);
+      allow delete: if isPlatformAdmin() || isForestOwner();
     }
 
     // ── plots ────────────────────────────────────────────────────────────────
@@ -107,11 +127,11 @@ service cloud.firestore {
 
     // ── carbonResults ────────────────────────────────────────────────────────
     // - Đọc: mọi user đã xác thực
-    // - Tạo/Sửa: admin hoặc owner
+    // - Tạo/Sửa: admin, owner hoặc worker
     // - Xóa: admin
     match /carbonResults/{resultId} {
       allow read: if isAuth();
-      allow create, update: if isAdminOrOwner();
+      allow create, update: if isAdminOrOwner() || isForestWorker();
       allow delete: if isPlatformAdmin();
     }
 
@@ -124,13 +144,14 @@ service cloud.firestore {
     }
 
     // ── notifications ────────────────────────────────────────────────────────
-    // - Đọc: chính mình
-    // - Ghi: admin (hoặc Cloud Function)
-    // - Update (đánh dấu đã đọc): chính mình
+    // - Đọc: mọi user đã xác thực (app đã filter by userId qua query)
+    // - Ghi: mọi user đã xác thực
+    // - Update (đánh dấu đã đọc): mọi user đã xác thực
+    // - Xóa: admin
     match /notifications/{notifId} {
-      allow read: if isAuth() && resource.data.userId == request.auth.uid;
-      allow create: if isPlatformAdmin();
-      allow update: if isAuth() && resource.data.userId == request.auth.uid;
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update: if isAuth();
       allow delete: if isPlatformAdmin();
     }
 
@@ -143,6 +164,15 @@ service cloud.firestore {
       allow create, update: if isAuth();
       allow delete: if isPlatformAdmin()
                     || (isAuth() && resource.data.uploadedBy == request.auth.uid);
+    }
+
+    // ── workerLocations ─────────────────────────────────────────────────────
+    // - Worker ghi vị trí của chính mình
+    // - Admin/owner đọc để quan sát trên bản đồ
+    match /workerLocations/{workerId} {
+      allow read: if isAdminOrOwner() || isOwnerOfDoc(workerId);
+      allow create, update: if isOwnerOfDoc(workerId);
+      allow delete: if isPlatformAdmin();
     }
   }
 }
