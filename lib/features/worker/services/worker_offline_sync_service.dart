@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -35,9 +36,11 @@ class WorkerOfflineSyncService {
   final Uuid _uuid = const Uuid();
 
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  Timer? _retryTimer;
   Box<dynamic>? _logBox;
   Box<dynamic>? _carbonBox;
   Box<dynamic>? _cacheBox;
+  final Map<String, List<SpeciesFactor>> _speciesFactorsMemory = {};
   String? _activeWorkerId;
   bool _initialized = false;
   bool _syncing = false;
@@ -59,11 +62,16 @@ class WorkerOfflineSyncService {
   Future<void> activateForWorker(String workerId) async {
     await initialize();
     _activeWorkerId = workerId;
+    _startRetryTimer();
     await syncPending();
   }
 
   void deactivateWorker(String workerId) {
-    if (_activeWorkerId == workerId) _activeWorkerId = null;
+    if (_activeWorkerId == workerId) {
+      _activeWorkerId = null;
+      _retryTimer?.cancel();
+      _retryTimer = null;
+    }
   }
 
   Future<bool> isNetworkAvailable() async {
@@ -170,6 +178,7 @@ class WorkerOfflineSyncService {
     List<SpeciesFactor> factors,
   ) async {
     await initialize();
+    _speciesFactorsMemory[projectId] = List<SpeciesFactor>.from(factors);
     await _cacheBox!.put(
       'species_factors_$projectId',
       factors.map((factor) => factor.toJson()).toList(),
@@ -178,29 +187,40 @@ class WorkerOfflineSyncService {
 
   Future<List<SpeciesFactor>> getCachedSpeciesFactors(String projectId) async {
     await initialize();
+    final inMemory = _speciesFactorsMemory[projectId];
+    if (inMemory != null && inMemory.isNotEmpty) {
+      return List<SpeciesFactor>.from(inMemory);
+    }
     final raw = _cacheBox!.get('species_factors_$projectId');
     if (raw is! List) return const [];
     try {
-      return raw
+      final factors = raw
           .map(
             (item) => SpeciesFactor.fromJson(
               Map<String, dynamic>.from(item as Map),
             ),
           )
           .toList();
+      if (factors.isNotEmpty) {
+        _speciesFactorsMemory[projectId] = List<SpeciesFactor>.from(factors);
+      }
+      return factors;
     } catch (_) {
       return const [];
     }
   }
 
-  Future<void> syncPending() async {
+  /// Đồng bộ các bản ghi đang chờ. Timer định kỳ là lớp dự phòng cho trường hợp
+  /// Android không phát sự kiện connectivity sau khi người dùng bật lại mạng.
+  Future<WorkerSyncReport> syncPending() async {
     await initialize();
+    final report = WorkerSyncReport();
     final activeWorkerId = _activeWorkerId;
     if (activeWorkerId == null ||
         activeWorkerId.isEmpty ||
         _syncing ||
         !await isNetworkAvailable()) {
-      return;
+      return report;
     }
     _syncing = true;
     try {
@@ -215,8 +235,11 @@ class WorkerOfflineSyncService {
           if (result.workerId != activeWorkerId) continue;
           await _db.saveCarbonResult(result);
           await _carbonBox!.delete(key);
-        } catch (_) {
+          report.syncedCarbons++;
+        } catch (error, stackTrace) {
           // Giữ job trong queue để thử lại lần kết nối tiếp theo.
+          report.addError('carbon', error);
+          debugPrint('[WorkerOfflineSync] Không đồng bộ được carbon: $error\n$stackTrace');
         }
       }
 
@@ -228,13 +251,87 @@ class WorkerOfflineSyncService {
           final user = Map<String, dynamic>.from(data['user'] as Map);
           if (user['uid'] != activeWorkerId) continue;
           await _syncLog(key, data);
-        } catch (_) {
+          report.syncedLogs++;
+        } catch (error, stackTrace) {
           // Giữ job cùng ảnh local để tránh mất dữ liệu khi upload dở dang.
+          report.addError('log', error);
+          debugPrint('[WorkerOfflineSync] Không đồng bộ được nhật ký: $error\n$stackTrace');
         }
       }
     } finally {
       _syncing = false;
     }
+    return report;
+  }
+
+  void _startRetryTimer() {
+    _retryTimer ??= Timer.periodic(const Duration(seconds: 15), (_) {
+      unawaited(syncPending());
+    });
+  }
+
+  /// Các bản ghi chờ được hiển thị ngay trên thiết bị, kể cả trước khi có mạng.
+  Stream<List<PendingWorkerLog>> watchPendingLogs({
+    required String userId,
+    required String projectId,
+  }) async* {
+    await initialize();
+    List<PendingWorkerLog> read() => _pendingLogsFor(userId, projectId);
+    yield read();
+    yield* _logBox!.watch().map((_) => read());
+  }
+
+  Stream<List<CarbonResultModel>> watchPendingCarbons({
+    required String workerId,
+    required String projectId,
+  }) async* {
+    await initialize();
+    List<CarbonResultModel> read() => _pendingCarbonsFor(workerId, projectId);
+    yield read();
+    yield* _carbonBox!.watch().map((_) => read());
+  }
+
+  List<PendingWorkerLog> _pendingLogsFor(String userId, String projectId) {
+    final logs = <PendingWorkerLog>[];
+    for (final key in _logBox?.keys ?? const <dynamic>[]) {
+      final raw = _logBox!.get(key);
+      if (raw is! Map) continue;
+      try {
+        final data = Map<String, dynamic>.from(raw);
+        final user = Map<String, dynamic>.from(data['user'] as Map);
+        final project = Map<String, dynamic>.from(data['project'] as Map);
+        if (user['uid'] != userId || project['id'] != projectId) continue;
+        // Nhật ký đã có trên Firestore thì không hiển thị hai lần. Job được giữ
+        // lại chỉ để retry PDF/tài liệu nền nếu Cloudinary đang lỗi.
+        if (data['logSaved'] == true) continue;
+        logs.add(PendingWorkerLog.fromQueue(data));
+      } catch (_) {
+        // Bỏ qua job hỏng, nhưng vẫn giữ trong queue để không tự ý mất dữ liệu.
+      }
+    }
+    logs.sort((a, b) => b.date.compareTo(a.date));
+    return logs;
+  }
+
+  List<CarbonResultModel> _pendingCarbonsFor(String workerId, String projectId) {
+    final results = <CarbonResultModel>[];
+    for (final key in _carbonBox?.keys ?? const <dynamic>[]) {
+      final raw = _carbonBox!.get(key);
+      if (raw is! Map) continue;
+      try {
+        final data = Map<String, dynamic>.from(raw);
+        final result = CarbonResultModel.fromJson(
+          Map<String, dynamic>.from(data['result'] as Map),
+        );
+        if (result.workerId == workerId && result.projectId == projectId) {
+          results.add(result);
+        }
+      } catch (_) {
+        // Giữ job lỗi trong queue; sync sẽ ghi lỗi cụ thể vào debug console.
+      }
+    }
+    results.sort((a, b) => b.calculatedAt.compareTo(a.calculatedAt));
+    return results;
   }
 
   Future<void> _syncLog(dynamic key, Map<String, dynamic> data) async {
@@ -280,59 +377,77 @@ class WorkerOfflineSyncService {
       createdAt: DateTime.parse(data['createdAt'] as String),
       syncedAt: now,
     );
-    await _db.saveLogEntry(entry);
+    // PDF có thể cần retry riêng (ví dụ preset Cloudinary cho raw file chưa
+    // được cấu hình). Ghi nhật ký trước và lưu marker để retry PDF không ghi
+    // lại nhật ký hoặc gửi thông báo trùng cho chủ rừng.
+    if (data['logSaved'] != true) {
+      await _db.saveLogEntry(entry);
+      data['logSaved'] = true;
+      await _logBox!.put(key, data);
+    }
 
-    var pdfUrl = data['pdfUrl'] as String? ?? '';
-    if (pdfUrl.isEmpty) {
-      final photoFiles = photoPaths.map((path) => File(path)).toList();
-      final pdfBytes = await _pdfService.buildFieldLogPdf(
-        user: user,
-        project: project,
-        entry: entry,
-        photoFiles: photoFiles,
-      );
+    // PDF/file document là dữ liệu phụ trợ. Không để lỗi raw-upload PDF làm
+    // nhật ký và thông báo chủ rừng bị coi là chưa đồng bộ.
+    try {
+      var pdfUrl = data['pdfUrl'] as String? ?? '';
+      if (pdfUrl.isEmpty) {
+        final photoFiles = photoPaths.map((path) => File(path)).toList();
+        final pdfBytes = await _pdfService.buildFieldLogPdf(
+          user: user,
+          project: project,
+          entry: entry,
+          photoFiles: photoFiles,
+        );
+        final fileName = _buildFieldLogFileName(
+          projectName: project.projectName,
+          date: entry.date,
+          logId: jobId,
+        );
+        pdfUrl = await _cloudinary.uploadBytes(
+          pdfBytes,
+          identifier: fileName,
+          folder: 'field_log_pdfs/${project.id}',
+          extension: '.pdf',
+        );
+        data['pdfUrl'] = pdfUrl;
+        await _logBox!.put(key, data);
+      }
+
       final fileName = _buildFieldLogFileName(
         projectName: project.projectName,
         date: entry.date,
         logId: jobId,
       );
-      pdfUrl = await _cloudinary.uploadBytes(
-        pdfBytes,
-        identifier: fileName,
-        folder: 'field_log_pdfs/${project.id}',
-        extension: '.pdf',
+      await _db.saveFileDocument(
+        FileDocumentModel(
+          id: 'offline-log-$jobId',
+          name: fileName,
+          category: 'Hình ảnh hiện trường',
+          type: 'pdf',
+          url: pdfUrl,
+          ownerId: project.ownerId,
+          projectId: project.id,
+          uploadedBy: user.uid,
+          uploadedByName: user.fullName.isNotEmpty ? user.fullName : user.email,
+          source: 'workerLogbook',
+          sourceLogId: jobId,
+          status: 'pending',
+          photoUrls: urls,
+          createdAt: entry.createdAt,
+          updatedAt: now,
+        ),
       );
-      data['pdfUrl'] = pdfUrl;
+
+      await _deleteCachedPhotos(photoPaths);
+      await _logBox!.delete(key);
+    } catch (error, stackTrace) {
+      data['pdfError'] = error.toString();
       await _logBox!.put(key, data);
+      debugPrint(
+        '[WorkerOfflineSync] Nhật ký đã đồng bộ, đang chờ retry PDF: '
+        '$error\n$stackTrace',
+      );
     }
-
-    final fileName = _buildFieldLogFileName(
-      projectName: project.projectName,
-      date: entry.date,
-      logId: jobId,
-    );
-    await _db.saveFileDocument(
-      FileDocumentModel(
-        id: 'offline-log-$jobId',
-        name: fileName,
-        category: 'Hình ảnh hiện trường',
-        type: 'pdf',
-        url: pdfUrl,
-        ownerId: project.ownerId,
-        projectId: project.id,
-        uploadedBy: user.uid,
-        uploadedByName: user.fullName.isNotEmpty ? user.fullName : user.email,
-        source: 'workerLogbook',
-        sourceLogId: jobId,
-        status: 'pending',
-        photoUrls: urls,
-        createdAt: entry.createdAt,
-        updatedAt: now,
-      ),
-    );
-
-    await _deleteCachedPhotos(photoPaths);
-    await _logBox!.delete(key);
   }
 
   Future<List<String>> _persistPhotos(
@@ -398,4 +513,46 @@ class WorkerOfflineContext {
     required this.projects,
     required this.allOwnerProjects,
   });
+}
+
+class WorkerSyncReport {
+  int syncedLogs = 0;
+  int syncedCarbons = 0;
+  final List<String> errors = [];
+
+  bool get hasChanges => syncedLogs > 0 || syncedCarbons > 0;
+  bool get hasErrors => errors.isNotEmpty;
+
+  void addError(String type, Object error) {
+    errors.add('$type: $error');
+  }
+}
+
+class PendingWorkerLog {
+  final String id;
+  final DateTime date;
+  final WorkType workType;
+  final String description;
+  final int photoCount;
+
+  const PendingWorkerLog({
+    required this.id,
+    required this.date,
+    required this.workType,
+    required this.description,
+    required this.photoCount,
+  });
+
+  factory PendingWorkerLog.fromQueue(Map<String, dynamic> data) {
+    return PendingWorkerLog(
+      id: data['id'] as String,
+      date: DateTime.parse(data['date'] as String),
+      workType: WorkType.values.firstWhere(
+        (type) => type.name == data['workType'],
+        orElse: () => WorkType.care,
+      ),
+      description: data['description'] as String? ?? '',
+      photoCount: (data['photoPaths'] as List? ?? const []).length,
+    );
+  }
 }

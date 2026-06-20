@@ -112,6 +112,9 @@ class _WorkerDashboardScreenState extends State<WorkerDashboardScreen>
         projects: resolvedProjects,
         allOwnerProjects: allOwnerProjects,
       );
+      // Nạp sẵn hệ số để Worker vẫn tính carbon được sau khi mở lại tab lúc
+      // offline, kể cả khi họ chưa từng vào Carbon ở phiên hiện tại.
+      unawaited(_cacheProjectSpeciesFactors(resolvedProjects));
       await WorkerOfflineSyncService.instance.activateForWorker(user.uid);
       if (!mounted) return;
       setState(() {
@@ -167,6 +170,27 @@ class _WorkerDashboardScreenState extends State<WorkerDashboardScreen>
     if (sameName.isNotEmpty) return sameName.first;
 
     return project;
+  }
+
+  Future<void> _cacheProjectSpeciesFactors(
+    List<ForestProjectModel> projects,
+  ) async {
+    try {
+      for (final project in projects) {
+        final species = project.treeSpecies.trim();
+        if (species.isEmpty) continue;
+        final factors = await _db.listSpeciesFactorsByNames([species]);
+        if (factors.isNotEmpty) {
+          await WorkerOfflineSyncService.instance.cacheSpeciesFactors(
+            project.id,
+            factors,
+          );
+        }
+      }
+    } catch (_) {
+      // Không chặn màn hình chính nếu pre-cache lỗi; WorkerCarbonTab sẽ tự
+      // fallback cache hoặc hiển thị lỗi rõ ràng khi người dùng mở tab.
+    }
   }
 
   Future<void> _refreshProjectBoundaries() async {
@@ -355,50 +379,61 @@ class _WorkerDashboardScreenState extends State<WorkerDashboardScreen>
           ? const Center(child: CircularProgressIndicator())
           : _projects.isEmpty
           ? _EmptyWorkerState(onRefresh: _loadInitialData)
-          : _tabIndex == 3
-          ? WorkerGpsMapTab(
-              isSharing: _gpsSharing,
-              lastPosition: _lastPosition,
-              owner: _owner,
-              selectedProject: project!,
-              allOwnerProjects: _allOwnerProjects,
-              onToggle: () => _toggleGpsSharing(),
-              onRefreshPosition: () {
-                _publishWorkerLocation().catchError(
-                  (e) => _showError('Không cập nhật được GPS: $e'),
-                );
-              },
-            )
-          : _tabIndex == 2
-          ? WorkerSavedRecordsTab(
-              userId: _user!.uid,
-              projectId: project!.id,
-            )
-          : RefreshIndicator(
-              onRefresh: _loadInitialData,
-              child: ListView(
-                padding: const EdgeInsets.all(AppSpacing.md),
-                children: [
-                  _WorkerSummary(user: _user, project: project),
-                  const SizedBox(height: AppSpacing.md),
-                  if (_tabIndex == 0)
-                    WorkerLogbookTab(
-                      user: _user!,
-                      project: project!,
-                      getPosition: _getCurrentPosition,
-                      onSaved: _showSuccess,
-                      onError: _showError,
-                    )
-                  else
-                    WorkerCarbonTab(
-                      user: _user!,
-                      project: project!,
-                      onSaved: _showSuccess,
-                      onError: _showError,
-                    ),
-                ],
-              ),
+          : IndexedStack(
+              index: _tabIndex,
+              children: [
+                _buildWorkerFormTab(project!, isCarbon: false),
+                _buildWorkerFormTab(project!, isCarbon: true),
+                WorkerSavedRecordsTab(
+                  userId: _user!.uid,
+                  projectId: project!.id,
+                ),
+                WorkerGpsMapTab(
+                  isSharing: _gpsSharing,
+                  lastPosition: _lastPosition,
+                  owner: _owner,
+                  selectedProject: project!,
+                  allOwnerProjects: _allOwnerProjects,
+                  onToggle: () => _toggleGpsSharing(),
+                  onRefreshPosition: () {
+                    _publishWorkerLocation().catchError(
+                      (e) => _showError('Không cập nhật được GPS: $e'),
+                    );
+                  },
+                ),
+              ],
             ),
+    );
+  }
+
+  Widget _buildWorkerFormTab(
+    ForestProjectModel project, {
+    required bool isCarbon,
+  }) {
+    return RefreshIndicator(
+      onRefresh: _loadInitialData,
+      child: ListView(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        children: [
+          _WorkerSummary(user: _user, project: project),
+          const SizedBox(height: AppSpacing.md),
+          if (isCarbon)
+            WorkerCarbonTab(
+              user: _user!,
+              project: project,
+              onSaved: _showSuccess,
+              onError: _showError,
+            )
+          else
+            WorkerLogbookTab(
+              user: _user!,
+              project: project,
+              getPosition: _getCurrentPosition,
+              onSaved: _showSuccess,
+              onError: _showError,
+            ),
+        ],
+      ),
     );
   }
 }
@@ -517,6 +552,26 @@ class WorkerSavedRecordsTab extends StatelessWidget {
       length: 2,
       child: Column(
         children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.sm, AppSpacing.md, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Dữ liệu đã lưu trên thiết bị',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () => _syncNow(context),
+                  icon: const Icon(Icons.sync, size: 18),
+                  label: const Text('Đồng bộ'),
+                ),
+              ],
+            ),
+          ),
           Container(
             margin: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.md, AppSpacing.md, 0),
             padding: const EdgeInsets.all(5),
@@ -544,13 +599,40 @@ class WorkerSavedRecordsTab extends StatelessWidget {
             child: TabBarView(
               children: [
                 _SavedWorkerLogs(userId: userId, projectId: projectId),
-                _SavedWorkerCarbons(projectId: projectId),
+                _SavedWorkerCarbons(userId: userId, projectId: projectId),
               ],
             ),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _syncNow(BuildContext context) async {
+    final report = await WorkerOfflineSyncService.instance.syncPending();
+    if (!context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    if (report.hasChanges) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Đã đồng bộ ${report.syncedLogs} nhật ký và ${report.syncedCarbons} kết quả carbon.',
+          ),
+        ),
+      );
+    } else if (report.hasErrors) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Chưa đồng bộ được. Dữ liệu vẫn được giữ an toàn để thử lại.'),
+        ),
+      );
+    } else {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Không có dữ liệu chờ hoặc thiết bị chưa có mạng.'),
+        ),
+      );
+    }
   }
 }
 
@@ -562,28 +644,40 @@ class _SavedWorkerLogs extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<List<LogEntryModel>>(
-      stream: FirestoreService.instance.streamWorkerLogEntries(userId),
+    return StreamBuilder<List<PendingWorkerLog>>(
+      stream: WorkerOfflineSyncService.instance.watchPendingLogs(
+        userId: userId,
+        projectId: projectId,
+      ),
       builder: (context, snapshot) {
-        final logs = (snapshot.data ?? [])
-            .where((entry) => entry.projectId == projectId)
-            .toList();
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (logs.isEmpty) {
-          return const _WorkerSavedEmptyState(
-            icon: Icons.menu_book_outlined,
-            message: 'Chưa có nhật ký nào được lưu cho dự án này.',
-          );
-        }
-        return ListView.separated(
-          padding: const EdgeInsets.all(AppSpacing.md),
-          itemCount: logs.length,
-          separatorBuilder: (_, _) => const SizedBox(height: 10),
-          itemBuilder: (context, index) {
-            final entry = logs[index];
-            return _SavedLogTile(entry: entry);
+        final pending = snapshot.data ?? const <PendingWorkerLog>[];
+        return StreamBuilder<List<LogEntryModel>>(
+          stream: FirestoreService.instance.streamWorkerLogEntries(userId),
+          builder: (context, remoteSnapshot) {
+            final logs = (remoteSnapshot.data ?? [])
+                .where((entry) => entry.projectId == projectId)
+                .toList();
+            if (pending.isEmpty &&
+                remoteSnapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (pending.isEmpty && logs.isEmpty) {
+              return const _WorkerSavedEmptyState(
+                icon: Icons.menu_book_outlined,
+                message: 'Chưa có nhật ký nào được lưu cho dự án này.',
+              );
+            }
+            return ListView.separated(
+              padding: const EdgeInsets.all(AppSpacing.md),
+              itemCount: pending.length + logs.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 10),
+              itemBuilder: (context, index) {
+                if (index < pending.length) {
+                  return _PendingLogTile(entry: pending[index]);
+                }
+                return _SavedLogTile(entry: logs[index - pending.length]);
+              },
+            );
           },
         );
       },
@@ -727,31 +821,126 @@ class _SavedLogTile extends StatelessWidget {
   }
 }
 
+class _PendingLogTile extends StatelessWidget {
+  final PendingWorkerLog entry;
+
+  const _PendingLogTile({required this.entry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.orange.withValues(alpha: 0.30)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: Colors.orange.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Icon(Icons.sync_outlined, color: Colors.orange),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.workType.label,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  entry.description.isEmpty ? 'Không có mô tả' : entry.description,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'Đang chờ đồng bộ',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Colors.orange.shade800,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(_formatDate(entry.date), style: Theme.of(context).textTheme.labelSmall),
+              const SizedBox(height: 5),
+              Text(
+                '${entry.photoCount} ảnh',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: Colors.orange.shade800,
+                    ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _SavedWorkerCarbons extends StatelessWidget {
+  final String userId;
   final String projectId;
 
-  const _SavedWorkerCarbons({required this.projectId});
+  const _SavedWorkerCarbons({required this.userId, required this.projectId});
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<CarbonResultModel>>(
-      stream: FirestoreService.instance.streamCarbonResultsForProject(projectId),
+      stream: WorkerOfflineSyncService.instance.watchPendingCarbons(
+        workerId: userId,
+        projectId: projectId,
+      ),
       builder: (context, snapshot) {
-        final results = snapshot.data ?? [];
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (results.isEmpty) {
-          return const _WorkerSavedEmptyState(
-            icon: Icons.eco_outlined,
-            message: 'Chưa có kết quả carbon nào được lưu.',
-          );
-        }
-        return ListView.separated(
-          padding: const EdgeInsets.all(AppSpacing.md),
-          itemCount: results.length,
-          separatorBuilder: (_, _) => const SizedBox(height: 10),
-          itemBuilder: (context, index) => _SavedCarbonTile(result: results[index]),
+        final pending = snapshot.data ?? const <CarbonResultModel>[];
+        return StreamBuilder<List<CarbonResultModel>>(
+          stream: FirestoreService.instance.streamCarbonResultsForProject(projectId),
+          builder: (context, remoteSnapshot) {
+            final results = remoteSnapshot.data ?? const <CarbonResultModel>[];
+            if (pending.isEmpty &&
+                remoteSnapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (pending.isEmpty && results.isEmpty) {
+              return const _WorkerSavedEmptyState(
+                icon: Icons.eco_outlined,
+                message: 'Chưa có kết quả carbon nào được lưu.',
+              );
+            }
+            return ListView.separated(
+              padding: const EdgeInsets.all(AppSpacing.md),
+              itemCount: pending.length + results.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 10),
+              itemBuilder: (context, index) {
+                if (index < pending.length) {
+                  return _SavedCarbonTile(
+                    result: pending[index],
+                    isPendingSync: true,
+                  );
+                }
+                return _SavedCarbonTile(
+                  result: results[index - pending.length],
+                );
+              },
+            );
+          },
         );
       },
     );
@@ -760,8 +949,9 @@ class _SavedWorkerCarbons extends StatelessWidget {
 
 class _SavedCarbonTile extends StatelessWidget {
   final CarbonResultModel result;
+  final bool isPendingSync;
 
-  const _SavedCarbonTile({required this.result});
+  const _SavedCarbonTile({required this.result, this.isPendingSync = false});
 
   @override
   Widget build(BuildContext context) {
@@ -770,17 +960,24 @@ class _SavedCarbonTile extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.tertiary.withValues(alpha: 0.16)),
+        border: Border.all(
+          color: (isPendingSync ? Colors.orange : AppColors.tertiary)
+              .withValues(alpha: 0.28),
+        ),
       ),
       child: Row(
         children: [
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: AppColors.tertiary.withValues(alpha: 0.12),
+              color: (isPendingSync ? Colors.orange : AppColors.tertiary)
+                  .withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(14),
             ),
-            child: const Icon(Icons.eco_outlined, color: AppColors.tertiary),
+            child: Icon(
+              isPendingSync ? Icons.sync_outlined : Icons.eco_outlined,
+              color: isPendingSync ? Colors.orange : AppColors.tertiary,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -798,6 +995,16 @@ class _SavedCarbonTile extends StatelessWidget {
                   '${result.totalBiomassKg.toStringAsFixed(1)} kg sinh khối · ${result.breakdown.length} loài',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
+                if (isPendingSync) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    'Đang chờ đồng bộ',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Colors.orange.shade800,
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -1232,9 +1439,24 @@ class _WorkerCarbonTabState extends State<WorkerCarbonTab> {
 
   Future<void> _loadFactors() async {
     setState(() => _isLoading = true);
+    final projectSpecies = widget.project.treeSpecies.trim();
+    final offline = WorkerOfflineSyncService.instance;
+    // Firestore có thể trả về danh sách rỗng khi mất mạng (thay vì throw), nên
+    // luôn đọc cache trước để tab Carbon vẫn hoạt động sau khi bị dispose/reopen.
+    final cachedFactors = await offline.getCachedSpeciesFactors(widget.project.id);
+
+    if (!await offline.isNetworkAvailable()) {
+      if (_useCachedFactors(cachedFactors)) return;
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      widget.onError(
+        'Chưa có hệ số loài trên thiết bị. Hãy mở tab Carbon một lần khi có mạng trước khi dùng offline.',
+      );
+      return;
+    }
+
     try {
       // Load only species factors for this project's tree species
-      final projectSpecies = widget.project.treeSpecies.trim();
       final List<SpeciesFactor> factors = projectSpecies.isNotEmpty
           ? await _db.listSpeciesFactorsByNames([projectSpecies])
           : <SpeciesFactor>[];
@@ -1249,6 +1471,9 @@ class _WorkerCarbonTabState extends State<WorkerCarbonTab> {
       if (!mounted) return;
 
       if (factors.isEmpty && projectSpecies.isNotEmpty) {
+        // Trường hợp mạng vừa mất hoặc Firestore trả cache rỗng: dùng dữ liệu
+        // đã lưu thay vì báo nhầm rằng Admin chưa cấu hình hệ số.
+        if (_useCachedFactors(cachedFactors)) return;
         setState(() => _isLoading = false);
         widget.onError(
           'Hệ số cho loài cây "$projectSpecies" chưa được cấu hình bởi admin.',
@@ -1262,23 +1487,22 @@ class _WorkerCarbonTabState extends State<WorkerCarbonTab> {
         _isLoading = false;
       });
     } catch (e) {
-      final cachedFactors =
-          await WorkerOfflineSyncService.instance.getCachedSpeciesFactors(
-        widget.project.id,
-      );
-      if (cachedFactors.isNotEmpty && mounted) {
-        setState(() {
-          _factors = cachedFactors;
-          _selectedFactor = cachedFactors.first;
-          _isLoading = false;
-        });
-        widget.onSaved('Đang dùng hệ số loài đã lưu trên thiết bị.');
-        return;
-      }
+      if (_useCachedFactors(cachedFactors)) return;
       if (!mounted) return;
       setState(() => _isLoading = false);
       widget.onError('Không tải được hệ số loài: $e');
     }
+  }
+
+  bool _useCachedFactors(List<SpeciesFactor> factors) {
+    if (factors.isEmpty || !mounted) return false;
+    setState(() {
+      _factors = factors;
+      _selectedFactor = factors.first;
+      _isLoading = false;
+    });
+    widget.onSaved('Đang dùng hệ số loài đã lưu trên thiết bị.');
+    return true;
   }
 
   void _calculatePreview() {

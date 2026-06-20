@@ -44,8 +44,14 @@ class _NotificationScreenState extends State<NotificationScreen> {
             ];
           } else if (user?.role == UserRole.forestOwner &&
               user?.ownerId.isNotEmpty == true) {
+            // Một số notification cũ dùng ownerId (ID hồ sơ rừng), còn luồng
+            // Worker mới gửi đúng UID tài khoản. Lắng nghe cả hai để chủ rừng
+            // không bỏ lỡ thông báo trong bất kỳ luồng nào.
             _notificationRecipientId = user!.ownerId;
-            _notificationRecipientIds = [user.ownerId];
+            _notificationRecipientIds = [
+              user.uid,
+              user.ownerId,
+            ];
           } else {
             _notificationRecipientId = _currentUserId;
             _notificationRecipientIds = [_currentUserId];

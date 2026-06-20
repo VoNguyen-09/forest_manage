@@ -76,8 +76,18 @@ class FirestoreService {
   }
 
   Future<List<UserModel>> listForestOwnerAccounts({String? ownerId}) async {
-    final users = await listUsers();
-    return users
+    // Không gọi listUsers() ở đây: Forest Worker không có quyền đọc toàn bộ
+    // users collection. Query theo ownerId vừa đúng security rules vừa tìm được
+    // UID tài khoản cần nhận notification.
+    Query<Map<String, dynamic>> query = _db.collection(FirestoreCollections.users);
+    if (ownerId != null && ownerId.isNotEmpty) {
+      query = query.where('ownerId', isEqualTo: ownerId);
+    } else {
+      query = query.where('role', isEqualTo: UserRole.forestOwner.name);
+    }
+    final snap = await query.get();
+    return snap.docs
+        .map((doc) => UserModel.fromJson(doc.data()..['uid'] = doc.id))
         .where(
           (user) =>
               user.role == UserRole.forestOwner &&
@@ -408,12 +418,12 @@ class FirestoreService {
       try {
         final project = await getForestProject(entry.projectId);
         if (project != null) {
-          await addNotification(
-            userId: project.ownerId,
+          await notifyForestOwners(
+            ownerId: project.ownerId,
             title: 'Nhật ký hiện trường mới',
             body:
                 'Nhân viên rừng vừa lưu một bản ghi hiện trường mới cho dự án "${project.projectName}"',
-            type: NotificationType.fieldLog.name,
+            type: NotificationType.fieldLog,
             relatedId: entryId,
           );
         }
@@ -426,26 +436,27 @@ class FirestoreService {
       return entryId;
     } else {
       final docRef = _logRef.doc(entry.id);
-      final existing = await docRef.get();
+      // Worker chỉ được đọc nhật ký của chính họ khi document đã tồn tại.
+      // Với job offline có ID cố định, get() trên document chưa tồn tại sẽ bị
+      // Firestore rules từ chối (permission-denied), khiến set() không bao giờ
+      // được thực hiện. set() tự chọn create/update và cả hai đều hợp lệ.
       await docRef.set(entry.toJson(), SetOptions(merge: true));
-      if (!existing.exists) {
-        try {
-          final project = await getForestProject(entry.projectId);
-          if (project != null) {
-            await addNotification(
-              userId: project.ownerId,
-              title: 'Nhật ký hiện trường mới',
-              body:
-                  'Nhân viên rừng vừa lưu một bản ghi hiện trường mới cho dự án "${project.projectName}"',
-              type: NotificationType.fieldLog.name,
-              relatedId: entry.id,
-            );
-          }
-        } catch (e) {
-          debugPrint(
-            '[FirestoreService] Failed to create notification for offline log: $e',
+      try {
+        final project = await getForestProject(entry.projectId);
+        if (project != null) {
+          await notifyForestOwners(
+            ownerId: project.ownerId,
+            title: 'Nhật ký hiện trường mới',
+            body:
+                'Nhân viên rừng vừa lưu một bản ghi hiện trường mới cho dự án "${project.projectName}"',
+            type: NotificationType.fieldLog,
+            relatedId: entry.id,
           );
         }
+      } catch (e) {
+        debugPrint(
+          '[FirestoreService] Failed to create notification for offline log: $e',
+        );
       }
       return entry.id;
     }
@@ -764,7 +775,9 @@ class FirestoreService {
     if (ownerAccounts.isNotEmpty) {
       for (final owner in ownerAccounts) {
         await addNotification(
-          userId: owner.ownerId.isNotEmpty ? owner.ownerId : owner.uid,
+          // notification.userId phải là UID đăng nhập. owner.ownerId là ID
+          // hồ sơ chủ rừng, không phải document users/{uid}.
+          userId: owner.uid,
           title: title,
           body: body,
           type: type.name,
