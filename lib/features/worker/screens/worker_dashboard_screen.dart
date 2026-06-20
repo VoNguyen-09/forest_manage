@@ -22,6 +22,7 @@ import 'package:forest_carbon_platform/core/services/auth_service.dart';
 import 'package:forest_carbon_platform/core/services/cloudinary_service.dart';
 import 'package:forest_carbon_platform/core/services/firestore_service.dart';
 import 'package:forest_carbon_platform/features/worker/services/field_log_pdf_service.dart';
+import 'package:forest_carbon_platform/features/worker/services/worker_offline_sync_service.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_button.dart';
 import 'package:forest_carbon_platform/shared/widgets/app_card.dart';
 
@@ -68,6 +69,9 @@ class _WorkerDashboardScreenState extends State<WorkerDashboardScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(WorkerOfflineSyncService.instance.syncPending());
+    }
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       final uid = _user?.uid;
@@ -102,6 +106,13 @@ class _WorkerDashboardScreenState extends State<WorkerDashboardScreen>
                 _resolveProjectWithLatestBoundary(project, allOwnerProjects),
           )
           .toList();
+      await WorkerOfflineSyncService.instance.cacheWorkerContext(
+        user: user,
+        owner: owner,
+        projects: resolvedProjects,
+        allOwnerProjects: allOwnerProjects,
+      );
+      await WorkerOfflineSyncService.instance.activateForWorker(user.uid);
       if (!mounted) return;
       setState(() {
         _user = user;
@@ -114,6 +125,24 @@ class _WorkerDashboardScreenState extends State<WorkerDashboardScreen>
         _isLoading = false;
       });
     } catch (e) {
+      final uid = _auth.currentUser?.uid;
+      final cached = uid == null
+          ? null
+          : await WorkerOfflineSyncService.instance.getCachedWorkerContext(uid);
+      if (cached != null) {
+        await WorkerOfflineSyncService.instance.activateForWorker(cached.user.uid);
+        if (!mounted) return;
+        setState(() {
+          _user = cached.user;
+          _owner = cached.owner;
+          _projects = cached.projects;
+          _allOwnerProjects = cached.allOwnerProjects;
+          _selectedProject = cached.projects.isEmpty ? null : cached.projects.first;
+          _isLoading = false;
+        });
+        _showSuccess('Đang dùng dữ liệu đã lưu trên thiết bị.');
+        return;
+      }
       if (!mounted) return;
       setState(() => _isLoading = false);
       _showError('Không tải được dữ liệu worker: $e');
@@ -253,6 +282,9 @@ class _WorkerDashboardScreenState extends State<WorkerDashboardScreen>
     _gpsTimer?.cancel();
     final uid = _user?.uid;
     if (uid != null && uid.isNotEmpty) await _db.setWorkerOffline(uid);
+    if (uid != null && uid.isNotEmpty) {
+      WorkerOfflineSyncService.instance.deactivateWorker(uid);
+    }
     await _auth.signOut();
     if (mounted) context.go(AppRoutes.login);
   }
@@ -884,7 +916,18 @@ class _WorkerLogbookTabState extends State<WorkerLogbookTab> {
     }
 
     setState(() => _isSaving = true);
+    String? savedLogId;
+    var uploadedPhotoUrls = <String>[];
+    var uploadedPdfUrl = '';
     try {
+      if (!await WorkerOfflineSyncService.instance.isNetworkAvailable()) {
+        await _queueLogForSync();
+        widget.onSaved(
+          'Đã lưu nhật ký trên thiết bị. Nhật ký sẽ tự gửi cho chủ rừng khi có mạng.',
+        );
+        return;
+      }
+
       final urls = <String>[];
       final photoFiles = _photos.map((x) => File(x.path)).toList();
       if (_photos.isNotEmpty) {
@@ -895,6 +938,7 @@ class _WorkerLogbookTabState extends State<WorkerLogbookTab> {
           ),
         );
       }
+      uploadedPhotoUrls = urls;
       final now = DateTime.now();
       final entry = LogEntryModel(
         id: '',
@@ -912,6 +956,7 @@ class _WorkerLogbookTabState extends State<WorkerLogbookTab> {
         syncedAt: now,
       );
       final logId = await _db.saveLogEntry(entry);
+      savedLogId = logId;
       final savedEntry = entry.copyWith(id: logId, photoUrls: urls);
       final pdfBytes = await _pdfService.buildFieldLogPdf(
         user: widget.user,
@@ -930,6 +975,7 @@ class _WorkerLogbookTabState extends State<WorkerLogbookTab> {
         folder: 'field_log_pdfs/${widget.project.id}',
         extension: '.pdf',
       );
+      uploadedPdfUrl = pdfUrl;
       await _db.saveFileDocument(
         FileDocumentModel(
           id: '',
@@ -962,10 +1008,62 @@ class _WorkerLogbookTabState extends State<WorkerLogbookTab> {
         'Đã lưu nhật ký và chuyển PDF sang Hình ảnh hiện trường. Chờ chủ rừng gửi Admin.',
       );
     } catch (e) {
-      widget.onError('Không lưu được nhật ký: $e');
+      if (_shouldQueueForOffline(e)) {
+        try {
+          await _queueLogForSync(
+            existingLogId: savedLogId,
+            uploadedPhotoUrls: uploadedPhotoUrls,
+            uploadedPdfUrl: uploadedPdfUrl,
+          );
+          widget.onSaved(
+            'Không kết nối được máy chủ. Nhật ký đã lưu trên thiết bị và sẽ tự đồng bộ khi có mạng.',
+          );
+        } catch (queueError) {
+          widget.onError('Không lưu được nhật ký: $queueError');
+        }
+      } else {
+        widget.onError('Không lưu được nhật ký: $e');
+      }
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
+  }
+
+  Future<void> _queueLogForSync({
+    String? existingLogId,
+    List<String> uploadedPhotoUrls = const [],
+    String uploadedPdfUrl = '',
+  }) async {
+    await WorkerOfflineSyncService.instance.queueLog(
+      user: widget.user,
+      project: widget.project,
+      date: _date,
+      workType: _workType,
+      description: _descriptionController.text.trim(),
+      gps: _gps != null
+          ? GpsPoint(lat: _gps!.latitude, lng: _gps!.longitude)
+          : const GpsPoint(lat: 0, lng: 0),
+      photoSourcePaths: _photos.map((photo) => photo.path).toList(),
+      jobId: existingLogId,
+      uploadedPhotoUrls: uploadedPhotoUrls,
+      pdfUrl: uploadedPdfUrl,
+    );
+    if (!mounted) return;
+    setState(() {
+      _photos = [];
+      _gps = null;
+      _date = DateTime.now();
+      _descriptionController.clear();
+    });
+  }
+
+  bool _shouldQueueForOffline(Object error) {
+    final message = error.toString().toLowerCase();
+    return error is SocketException ||
+        message.contains('connection error') ||
+        message.contains('network') ||
+        message.contains('socket') ||
+        message.contains('timed out');
   }
 
   @override
@@ -1141,6 +1239,13 @@ class _WorkerCarbonTabState extends State<WorkerCarbonTab> {
           ? await _db.listSpeciesFactorsByNames([projectSpecies])
           : <SpeciesFactor>[];
 
+      if (factors.isNotEmpty) {
+        await WorkerOfflineSyncService.instance.cacheSpeciesFactors(
+          widget.project.id,
+          factors,
+        );
+      }
+
       if (!mounted) return;
 
       if (factors.isEmpty && projectSpecies.isNotEmpty) {
@@ -1157,6 +1262,19 @@ class _WorkerCarbonTabState extends State<WorkerCarbonTab> {
         _isLoading = false;
       });
     } catch (e) {
+      final cachedFactors =
+          await WorkerOfflineSyncService.instance.getCachedSpeciesFactors(
+        widget.project.id,
+      );
+      if (cachedFactors.isNotEmpty && mounted) {
+        setState(() {
+          _factors = cachedFactors;
+          _selectedFactor = cachedFactors.first;
+          _isLoading = false;
+        });
+        widget.onSaved('Đang dùng hệ số loài đã lưu trên thiết bị.');
+        return;
+      }
       if (!mounted) return;
       setState(() => _isLoading = false);
       widget.onError('Không tải được hệ số loài: $e');
@@ -1188,7 +1306,26 @@ class _WorkerCarbonTabState extends State<WorkerCarbonTab> {
         co2eTon: item.co2eTon,
         breakdown: [item],
       );
-      await _db.saveCarbonResult(result);
+      if (!await WorkerOfflineSyncService.instance.isNetworkAvailable()) {
+        await WorkerOfflineSyncService.instance.queueCarbon(result: result);
+        if (!mounted) return;
+        widget.onSaved(
+          'Đã lưu kết quả carbon trên thiết bị. Kết quả sẽ tự gửi cho chủ rừng khi có mạng.',
+        );
+        return;
+      }
+
+      try {
+        await _db.saveCarbonResult(result);
+      } catch (error) {
+        if (!_shouldQueueForOffline(error)) rethrow;
+        await WorkerOfflineSyncService.instance.queueCarbon(result: result);
+        if (!mounted) return;
+        widget.onSaved(
+          'Không kết nối được máy chủ. Kết quả carbon đã lưu trên thiết bị và sẽ tự đồng bộ khi có mạng.',
+        );
+        return;
+      }
       if (!mounted) return;
       widget.onSaved('Đã lưu ước lượng carbon.');
     } catch (e) {
@@ -1226,6 +1363,15 @@ class _WorkerCarbonTabState extends State<WorkerCarbonTab> {
       carbonTon: carbonTon,
       co2eTon: co2eTon,
     );
+  }
+
+  bool _shouldQueueForOffline(Object error) {
+    final message = error.toString().toLowerCase();
+    return error is SocketException ||
+        message.contains('connection error') ||
+        message.contains('network') ||
+        message.contains('socket') ||
+        message.contains('timed out');
   }
 
   @override

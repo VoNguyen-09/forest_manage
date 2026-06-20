@@ -147,6 +147,8 @@ class HiveBoxes {
   static const String pendingLogs = 'pending_logs';
   static const String pendingCheckins = 'pending_checkins';
   static const String pendingTreeData = 'pending_tree_data';
+  static const String pendingWorkerLogs = 'pending_worker_logs';
+  static const String pendingWorkerCarbons = 'pending_worker_carbons';
   static const String userCache = 'user_cache';
 }
 

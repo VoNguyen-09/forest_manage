@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:forest_carbon_platform/app.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'firebase_options.dart';
+import 'package:forest_carbon_platform/features/worker/services/worker_offline_sync_service.dart';
 
 // TODO (TV4 — Tuần 1):
 // 1. Chạy: flutter pub add firebase_core firebase_auth cloud_firestore firebase_messaging
@@ -22,9 +24,8 @@ void main() async {
     persistenceEnabled: false,
   );
 
-  // ── Hive init (TV3 setup) ─────────────────────────────────────────────────
-  // await Hive.initFlutter();
-  // Hive.registerAdapter(LogEntryModelAdapter());
+  await Hive.initFlutter();
+  await WorkerOfflineSyncService.instance.initialize();
 
   runApp(const ForestCarbonApp());
 }

@@ -425,7 +425,28 @@ class FirestoreService {
 
       return entryId;
     } else {
-      await _logRef.doc(entry.id).set(entry.toJson(), SetOptions(merge: true));
+      final docRef = _logRef.doc(entry.id);
+      final existing = await docRef.get();
+      await docRef.set(entry.toJson(), SetOptions(merge: true));
+      if (!existing.exists) {
+        try {
+          final project = await getForestProject(entry.projectId);
+          if (project != null) {
+            await addNotification(
+              userId: project.ownerId,
+              title: 'Nhật ký hiện trường mới',
+              body:
+                  'Nhân viên rừng vừa lưu một bản ghi hiện trường mới cho dự án "${project.projectName}"',
+              type: NotificationType.fieldLog.name,
+              relatedId: entry.id,
+            );
+          }
+        } catch (e) {
+          debugPrint(
+            '[FirestoreService] Failed to create notification for offline log: $e',
+          );
+        }
+      }
       return entry.id;
     }
   }
@@ -506,8 +527,28 @@ class FirestoreService {
       }
 
       await _carbonRef
-          .doc(result.id)
-          .set(result.toJson(), SetOptions(merge: true));
+        .doc(result.id)
+        .set(result.toJson(), SetOptions(merge: true));
+
+      if (previous == null) {
+        try {
+          final project = await getForestProject(result.projectId);
+          if (project != null) {
+            await notifyForestOwners(
+              ownerId: project.ownerId,
+              title: 'Tính toán Carbon hoàn tất',
+              body:
+                  'Kết quả tính toán carbon mới cho dự án "${project.projectName}": CO₂e ${result.co2eTon.toStringAsFixed(3)} tCO₂e',
+              type: NotificationType.carbon,
+              relatedId: result.id,
+            );
+          }
+        } catch (e) {
+          debugPrint(
+            '[FirestoreService] Failed to create notification for offline carbon: $e',
+          );
+        }
+      }
 
       final isSentToAdmin =
           result.status == CarbonApprovalStatus.approvedByOwner ||
